@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# raw source media is not needed to build the site
+/media
+
+*.tsbuildinfo
