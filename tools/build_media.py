@@ -45,9 +45,9 @@ SEGMENTS = {
     # interiors: slow dolly through the salon, the ring of yachts visible through the windows
     "a_interior": ("a_interior.mp4", 0.0, 6.0, 1920, 88, 2.5, 6),
     "b_interior": ("b_interior.mp4", 0.0, 6.0, 1920, 88, 2.5, 6),
-    # cockpit glides shown in the detail windows
-    "a_close": ("04_a_closeup.mp4", 0.0, 4.4, 1920, 88, 3.0, 6),
-    "b_close": ("07_b_closeup.mp4", 0.0, 5.9, 1920, 88, 3.0, 6),
+    # cockpit glides shown in the small detail windows (~640 px wide on screen): 1280 px is already 1:1 on a 2x display
+    "a_close": ("04_a_closeup.mp4", 0.0, 4.4, 1280, 90, 3.0, 6),
+    "b_close": ("07_b_closeup.mp4", 0.0, 5.9, 1280, 90, 3.0, 6),
 }
 
 # ring idle loop (the hero): forward then reverse over a short window so it never jumps
@@ -154,6 +154,8 @@ def build_lite(name):
     with Pool(max(1, (os.cpu_count() or 2))) as pool:
         pool.map(_lite, jobs)
     m["lite"] = f"frames/{name}/lite/f_%03d.webp"
+    # exact byte size of every full-HD frame, so the loading screen can show a true progress figure
+    m["sizes"] = [os.path.getsize(os.path.join(d, f"f_{k + 1:03d}.webp")) for k in range(m["count"])]
     with open(mp, "w") as fh:
         json.dump(m, fh)
     size = sum(os.path.getsize(os.path.join(out, f)) for f in os.listdir(out)) / 1e6

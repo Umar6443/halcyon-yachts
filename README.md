@@ -43,12 +43,12 @@ Quality is prioritised over file size (about 230 MB of media, each part loading 
 - Scroll clips are cut at the clips' native 1920x1080 at WebP quality 88, keeping nearly every frame wherever the camera moves (up to the original 24 fps).
 - The canvas scales with the browser's highest-quality filter, snaps to a single pristine frame when scrolling pauses, and releases clips that have scrolled out of view.
 
-## Loading: fast open, everything always ready
-- **The page opens in 1-3 s** (poster + the first few preview frames). The big hero loop starts streaming right after.
-- **Tiny preview frames for every clip (~12 MB)** download first, so every animation works from the first second (slightly soft).
-- **Full-HD frames stream in behind the scenes**, nearest-first around where the visitor is, and each one replaces its preview as it arrives. A clip with no picture yet never shows as an empty layer: the previous view stays until it has one.
-- **Browser cache (`public/sw.js`)**: after the first visit every frame is stored locally, so later visits open instantly and fully sharp. Bump `CACHE` in `sw.js` whenever the media is rebuilt.
-- Rebuild only the previews with `python3 tools/build_media.py --lite`.
+## Loading: everything preloaded in full quality
+- The loading screen downloads **every full-HD frame of every clip and the hero loop (~220 MB)** before the page opens, with a true byte-based progress bar. When it opens, everything is already sharp: no soft previews, nothing streams in while you scroll.
+- Rough wait on a first visit: ~220 MB / connection speed (100 Mbps = ~18 s, 200 Mbps = ~9 s, 50 Mbps = ~35 s).
+- **Browser cache (`public/sw.js`)**: after the first visit every file is stored locally, so later visits skip the download. Bump `CACHE` in `sw.js` whenever the media is rebuilt.
+- Safety net: on a very slow connection (150 s) the site opens anyway and fetches tiny preview frames (`--lite`) so no clip is ever an empty layer.
+- The two small detail-window clips are stored at 1280 px (they are shown ~640 px wide, so 1280 is already 1:1 on a 2x display); everything full-screen is native 1920x1080.
 
 ## Scroll performance
 - Lenis glide is light (`lerp: 0.16`) and the timeline is tied directly to it (`scrub: true`), so there is no second catch-up delay on top of the glide.

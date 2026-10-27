@@ -340,20 +340,44 @@ export default function Story() {
       });
     }, 3000);
 
-    /* ---------- loading: open fast, then stream everything behind the scenes ---------- */
+    /* ---------- loading: preload EVERYTHING in full quality, then open ---------- */
     let alive = true;
     const all = Object.values(seqs);
     setSequenceRank(["a_focus", "a_interior", "a_close", "ab_slide", "b_interior", "b_close"]);
-    // tiny previews of EVERY clip first (~12 MB), then the full-HD frames nearest-first around the visitor
-    all.forEach((sq) => sq.start());
+    all.forEach((sq) => sq.start()); // every full-HD frame, nearest the visitor's path first
 
-    // the page opens as soon as the poster and the first preview frames are in (about a second)
     let posterReady = false;
     const poster = new Image();
     poster.onload = poster.onerror = () => {
       posterReady = true;
     };
     poster.src = "img/ring-poster.webp";
+
+    // the hero loop is fetched whole (so it plays without any buffering) and counted in the progress bar
+    let ringLoaded = 0;
+    let ringTotal = 21e6;
+    let ringDone = false;
+    let ringUrl = "";
+    (async () => {
+      try {
+        const res = await fetch("video/ring.mp4");
+        ringTotal = Number(res.headers.get("content-length")) || ringTotal;
+        const reader = res.body!.getReader();
+        const chunks: Uint8Array[] = [];
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          ringLoaded += value.length;
+        }
+        ringUrl = URL.createObjectURL(new Blob(chunks as BlobPart[], { type: "video/mp4" }));
+        ringVideo.src = ringUrl;
+        ringVideo.load();
+      } catch {
+        ringVideo.src = "video/ring.mp4"; // fall back to plain streaming
+      }
+      ringDone = true;
+    })();
 
     let opened = false;
     const open = () => {
@@ -365,21 +389,25 @@ export default function Story() {
         setReady(true);
         lenis.start();
         render();
-        // the big hero loop starts streaming only now, so it never slows down the opening
-        ringVideo.src = "video/ring.mp4";
-        ringVideo.load();
         if (!reduced) ringVideo.play().catch(() => {});
       }, 350);
     };
-    const NEED = 8;
     const poll = setInterval(() => {
       if (!alive || opened) return;
-      const f = Math.min(1, seqs.a_focus.loadedLite / NEED);
-      setProgress(Math.min(99, Math.round((posterReady ? 25 : 0) + 75 * f)));
-      if (posterReady && seqs.a_focus.loadedLite >= NEED) open();
-    }, 80);
-    // safety: never trap the visitor behind the loader
-    const failsafe = setTimeout(open, 8000);
+      const manifests = all.every((sq) => sq.bytesTotal > 0);
+      const total = all.reduce((n, sq) => n + sq.bytesTotal, 0) + ringTotal;
+      const got = all.reduce((n, sq) => n + sq.bytesLoaded, 0) + ringLoaded;
+      // a true figure: bytes of every frame and the hero video that are already in the browser
+      setProgress(Math.min(99, manifests ? Math.round((got / total) * 100) : 0));
+      const everything = all.every((sq) => sq.count > 0 && sq.loadedHd >= sq.count);
+      if (posterReady && ringDone && manifests && everything) open();
+    }, 100);
+    // safety for very slow connections: open anyway, and fetch the tiny preview frames so no clip is ever empty
+    const failsafe = setTimeout(() => {
+      if (opened) return;
+      all.forEach((sq) => sq.enableLite());
+      open();
+    }, 150000);
 
     // keep the shared download queue pointed at where the visitor is: nearest clip first, ahead before behind
     const RANGES: [SeqName, number, number][] = [
@@ -419,6 +447,7 @@ export default function Story() {
     return () => {
       alive = false;
       clearTimeout(failsafe);
+      if (ringUrl) URL.revokeObjectURL(ringUrl);
       clearTimeout(settleTimer);
       clearInterval(poll);
       clearInterval(memory);

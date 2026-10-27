@@ -1,11 +1,11 @@
 /**
  * Scroll-scrubbed WebP frame sequence with progressive quality.
  *
- * Every clip exists in two tiers: a tiny "lite" preview of each frame (a few KB) and the full-HD frame.
- *  - Lite frames for ALL clips are downloaded first (about 12 MB in total), so every animation works
- *    from the first second of the visit.
- *  - Full-HD frames then stream in behind the scenes, nearest-first around the visitor's position
- *    (see setSequenceRank), and each one replaces its lite preview as soon as it has arrived.
+ * Every clip exists in two tiers: the full-HD frames and a tiny "lite" preview of each frame.
+ *  - The site preloads ALL full-HD frames before it opens (see Story), so everything is sharp from the start.
+ *  - Lite previews are only an emergency fallback: if the visitor's connection is too slow and the site opens
+ *    before the HD frames are in, enableLite() fetches them so no clip is ever an empty layer; each HD frame
+ *    replaces its preview as soon as it arrives.
  *
  * Frames are NOT evenly spaced: the build keeps many frames where the camera moves fast and few where
  * the shot is nearly still (manifest.ts = each frame's position 0..1 in the original clip).
@@ -16,14 +16,14 @@
 
 type Bitmap = ImageBitmap | HTMLImageElement;
 
-type Manifest = { count: number; pattern: string; lite?: string; w: number; h: number; fps: number; ts?: number[] };
+type Manifest = { count: number; pattern: string; lite?: string; w: number; h: number; fps: number; ts?: number[]; sizes?: number[] };
 
 const WINDOW_SIDE = 6;
 const WINDOW_EXTRA = 5;
 const WINDOW_KEEP = 12;
 const DECODE_PARALLEL = 3;
 /** downloads running at once, across ALL clips */
-const FETCH_PARALLEL = 8;
+const FETCH_PARALLEL = 16;
 
 /* ---------- one shared download scheduler: lowest priority number goes first ---------- */
 
@@ -92,6 +92,10 @@ export class Sequence {
   /** preview frames fetched / full-HD frames fetched */
   loadedLite = 0;
   loadedHd = 0;
+  /** full-HD bytes fetched so far / in total (total is known once the manifest has loaded) */
+  bytesLoaded = 0;
+  bytesTotal = 0;
+  private liteScheduled = false;
   /** performance.now() of the last draw, used to free memory of sequences that are no longer on screen */
   lastDrawAt = 0;
   /** true once at least one frame has been painted into a canvas (so the layer is no longer empty) */
@@ -112,7 +116,7 @@ export class Sequence {
 
   constructor(private name: string) {}
 
-  /** Fetch the manifest, then queue every preview frame and every HD frame with the shared scheduler. */
+  /** Fetch the manifest, then queue every full-HD frame with the shared scheduler. */
   start() {
     if (this.started) return;
     this.started = true;
@@ -125,25 +129,17 @@ export class Sequence {
         this.h = m.h;
         this.lite = new Array(m.count).fill(null);
         this.hd = new Array(m.count).fill(null);
+        this.bytesTotal = m.sizes ? m.sizes.reduce((n, b) => n + b, 0) : m.count * 300000;
         const url = (pattern: string, i: number) => pattern.replace("%03d", String(i + 1).padStart(3, "0"));
+        // full HD: the clip nearest the visitor first, nearest frames first
         for (let i = 0; i < m.count; i++) {
-          // previews: all clips, in order of the visitor's path, before anything else
-          if (m.lite) {
-            scheduleFetch(
-              () => 0 + (rank[this.name] ?? 9) * 0.01 + i * 1e-5,
-              async () => {
-                this.lite[i] = await fetch(url(m.lite!, i)).then((r) => r.blob());
-                this.loadedLite += 1;
-                this.afterArrival(i);
-              },
-            );
-          }
-          // full HD: nearest-first around the playhead, clip nearest the visitor first
           scheduleFetch(
             () => 10 + (rank[this.name] ?? 9) * 100 + Math.abs(i - this.center) / 1000,
             async () => {
-              this.hd[i] = await fetch(url(m.pattern, i)).then((r) => r.blob());
+              const blob = await fetch(url(m.pattern, i)).then((r) => r.blob());
+              this.hd[i] = blob;
               this.loadedHd += 1;
+              this.bytesLoaded += blob.size;
               this.afterArrival(i);
             },
           );
@@ -152,6 +148,24 @@ export class Sequence {
         /* sequence stays empty; callers check .count */
       }
     })();
+  }
+
+  /** emergency fallback: fetch the tiny preview frames too (used only if the site had to open before the HD frames were in) */
+  enableLite() {
+    const m = this.manifest;
+    if (this.liteScheduled || !m || !m.lite) return;
+    this.liteScheduled = true;
+    const url = (i: number) => m.lite!.replace("%03d", String(i + 1).padStart(3, "0"));
+    for (let i = 0; i < m.count; i++) {
+      scheduleFetch(
+        () => 0 + (rank[this.name] ?? 9) * 0.01 + i * 1e-5,
+        async () => {
+          this.lite[i] = await fetch(url(i)).then((r) => r.blob());
+          this.loadedLite += 1;
+          this.afterArrival(i);
+        },
+      );
+    }
   }
 
   /** a frame just arrived: if it is near the playhead, decode it now (and let a preview be upgraded) */
@@ -300,8 +314,8 @@ export class Sequence {
     const f0 = this.nearest(first);
     if (!f0) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    const cw = Math.min(2200, Math.round(canvas.clientWidth * dpr));
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cw = Math.min(2880, Math.round(canvas.clientWidth * dpr));
     const ch = Math.round(cw * (canvas.clientHeight / Math.max(1, canvas.clientWidth)));
     // nothing changed since the last paint (same frames, blend, crop, size): don't repaint
     const key = `${first}|${i1}|${a.toFixed(3)}|${fx.toFixed(3)}|${fy}|${cw}x${ch}|${settle ? 1 : 0}`;

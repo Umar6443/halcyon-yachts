@@ -1,9 +1,9 @@
 /*
  * Media cache. The first visit downloads the frames; this stores each one in the browser, so every later
  * visit opens instantly and fully sharp (no re-download). Bump CACHE when the media is rebuilt.
- * Video files are left to the browser (they are streamed with range requests).
+ * The hero loop is fetched as a whole file (no range request), so it is cached too.
  */
-const CACHE = "halcyon-media-v1";
+const CACHE = "halcyon-media-v2";
 
 self.addEventListener("install", () => self.skipWaiting());
 
@@ -22,7 +22,7 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET" || req.headers.has("range")) return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin || !/\/(frames|img)\//.test(url.pathname)) return;
+  if (url.origin !== self.location.origin || !/\/(frames|img|video)\//.test(url.pathname)) return;
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
