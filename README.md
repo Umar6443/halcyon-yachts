@@ -52,3 +52,6 @@ Quality is prioritised over file size (about 230 MB of media, each part loading 
 - Clips used: `ring_loop_v2`, `a_focus`, `ab_slide` (first 4.7 s; it dissolves into its end frame after that), `a_interior`, `b_interior`, plus the two cockpit glides for the detail windows.
 - Portrait screens pan the cropped slice to follow yacht A, then B.
 - Respects `prefers-reduced-motion` (no smoothing); the loader never traps the visitor if a video cannot play.
+
+## Live site
+https://umar6443.github.io/halcyon-yachts/ (deployed by `.github/workflows/deploy.yml` on every push to `main`).
