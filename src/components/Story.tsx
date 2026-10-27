@@ -331,49 +331,23 @@ export default function Story() {
       });
     }, 3000);
 
-    /* ---------- loading: real progress ---------- */
+    /* ---------- loading: every clip is downloaded BEFORE the page opens ---------- */
     let alive = true;
-    const NEED = 12;
     let videoReady = false;
-    const updateProgress = () => {
-      const f = Math.min(1, seqs.a_focus.loaded / NEED);
-      setProgress(Math.round((videoReady ? 35 : 0) + f * 65));
-    };
+    const all = Object.values(seqs);
+    // visitors on a slow or data-saver connection keep a lighter path: first flight now, the rest as they scroll
+    const conn = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+    const lean = !!conn && (!!conn.saveData || /(^|-)(2g|3g)$/.test(conn.effectiveType ?? ""));
+    const NEED = 12;
+
     const onVideo = () => {
       videoReady = true;
-      updateProgress();
     };
     if (ringVideo.readyState >= 3) onVideo();
     ringVideo.addEventListener("canplay", onVideo, { once: true });
     ringVideo.addEventListener("error", onVideo, { once: true });
-    seqs.a_focus.start(6);
-    const poll = setInterval(updateProgress, 120);
 
-    // after the first flight is in, fetch the rest in the order the visitor will reach it
-    (async () => {
-      await seqs.a_focus.whenLoaded(NEED);
-      if (!alive) return;
-      const order: SeqName[] = ["a_interior", "ab_slide", "a_close", "b_interior", "b_close"];
-      let prev: Sequence = seqs.a_focus;
-      for (const name of order) {
-        await prev.whenFraction(0.6);
-        if (!alive) return;
-        seqs[name].start(6);
-        prev = seqs[name];
-      }
-    })();
-
-    (async () => {
-      await seqs.a_focus.whenLoaded(NEED);
-      await new Promise<void>((res) => {
-        if (videoReady) res();
-        else {
-          ringVideo.addEventListener("canplay", () => res(), { once: true });
-          ringVideo.addEventListener("error", () => res(), { once: true });
-        }
-      });
-      if (!alive) return;
-      clearInterval(poll);
+    const open = () => {
       setProgress(100);
       setTimeout(() => {
         if (!alive) return;
@@ -381,13 +355,56 @@ export default function Story() {
         lenis.start();
         render();
       }, 450);
-    })();
-    // safety: never trap the visitor behind the loader
+    };
+
+    let opened = false;
+    const poll = setInterval(() => {
+      if (!alive || opened) return;
+      const known = all.every((sq) => sq.count > 0);
+      const total = all.reduce((n, sq) => n + sq.count, 0);
+      const loaded = all.reduce((n, sq) => n + sq.loaded, 0);
+      if (lean) {
+        const f = Math.min(1, seqs.a_focus.loaded / NEED);
+        setProgress(Math.round((videoReady ? 35 : 0) + f * 65));
+        if (videoReady && seqs.a_focus.loaded >= NEED) {
+          opened = true;
+          open();
+        }
+      } else {
+        // 100% only once every frame of every clip is in the browser, and the hero loop can play
+        setProgress(Math.min(99, Math.round((videoReady ? 8 : 0) + (known && total ? 92 * (loaded / total) : 0))));
+        if (videoReady && known && loaded >= total) {
+          opened = true;
+          open();
+        }
+      }
+    }, 150);
+
+    if (lean) {
+      seqs.a_focus.start(6);
+      (async () => {
+        await seqs.a_focus.whenLoaded(NEED);
+        const order: SeqName[] = ["a_interior", "ab_slide", "a_close", "b_interior", "b_close"];
+        let prev: Sequence = seqs.a_focus;
+        for (const name of order) {
+          await prev.whenFraction(0.6);
+          if (!alive) return;
+          seqs[name].start(6);
+          prev = seqs[name];
+        }
+      })();
+    } else {
+      // everything at once (the host serves them over HTTP/2, so they download in parallel)
+      seqs.a_focus.start(8);
+      (["a_interior", "ab_slide", "a_close", "b_interior", "b_close"] as SeqName[]).forEach((name) => seqs[name].start(6));
+    }
+
+    // safety: never trap the visitor behind the loader if a download stalls
     const failsafe = setTimeout(() => {
-      if (!alive) return;
-      setReady(true);
-      lenis.start();
-    }, 25000);
+      if (!alive || opened) return;
+      opened = true;
+      open();
+    }, lean ? 25000 : 240000);
 
     const onResize = () => {
       measure();
