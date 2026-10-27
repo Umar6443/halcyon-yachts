@@ -43,6 +43,13 @@ Quality is prioritised over file size (about 230 MB of media, each part loading 
 - Scroll clips are cut at the clips' native 1920x1080 at WebP quality 88, keeping nearly every frame wherever the camera moves (up to the original 24 fps).
 - The canvas scales with the browser's highest-quality filter, snaps to a single pristine frame when scrolling pauses, and releases clips that have scrolled out of view.
 
+## Loading: fast open, everything always ready
+- **The page opens in 1-3 s** (poster + the first few preview frames). The big hero loop starts streaming right after.
+- **Tiny preview frames for every clip (~12 MB)** download first, so every animation works from the first second (slightly soft).
+- **Full-HD frames stream in behind the scenes**, nearest-first around where the visitor is, and each one replaces its preview as it arrives. A clip with no picture yet never shows as an empty layer: the previous view stays until it has one.
+- **Browser cache (`public/sw.js`)**: after the first visit every frame is stored locally, so later visits open instantly and fully sharp. Bump `CACHE` in `sw.js` whenever the media is rebuilt.
+- Rebuild only the previews with `python3 tools/build_media.py --lite`.
+
 ## Scroll performance
 - Lenis glide is light (`lerp: 0.16`) and the timeline is tied directly to it (`scrub: true`), so there is no second catch-up delay on top of the glide.
 - Drawing happens in the same frame as the scroll update, repaints are skipped when nothing changed, frames decode nearest-first a few at a time, and style writes only happen when a value changed.

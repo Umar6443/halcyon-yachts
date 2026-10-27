@@ -7,7 +7,7 @@ import Lenis from "lenis";
 import { ArrowDown } from "lucide-react";
 import { BRAND, YACHTS, type Yacht } from "@/data/yachts";
 import { CHAPTERS } from "@/data/chapters";
-import { Sequence } from "@/lib/sequence";
+import { Sequence, setSequenceRank } from "@/lib/sequence";
 import Loader from "./Loader";
 import Nav from "./Nav";
 import Footer from "./Footer";
@@ -133,9 +133,16 @@ export default function Story() {
     const render = (settle = false) => {
       queued = false;
 
+      // a clip whose first frames have not arrived yet must never show as an empty layer:
+      // until it has a picture, the layer before it stays on screen
+      const rF = seqs.a_focus.hasPicture;
+      const rS = seqs.ab_slide.hasPicture;
+      const dA = seqs.a_interior.hasPicture ? S.dA : 0;
+      const dB = seqs.b_interior.hasPicture ? S.dB : 0;
+
       // opening: the ring loop hands over to the descent (their first frames are the same picture)
       const finBlur = 6 * Math.sin(Math.PI * S.fin);
-      const ringOp = Math.max(S.ringOp, S.fin);
+      const ringOp = Math.max(S.ringOp, S.fin, S.fOp > 0.01 && !rF ? 1 : 0);
       css(ringWrap, "opacity", String(ringOp));
       css(ringWrap, "filter", finBlur > 0.2 && S.fin > 0 ? `blur(${finBlur.toFixed(1)}px)` : "");
       // the hero loop is hidden for most of the page: stop decoding it while it can't be seen
@@ -145,12 +152,13 @@ export default function Story() {
       }
 
       // exterior layers + interior layers, linked by the "dive in" value of each yacht
-      const xa = extLook(S.dA);
-      const xb = extLook(S.dB);
-      const ia = intLook(S.dA);
-      const ib = intLook(S.dB);
-      const fE = S.fOp * xa.op;
-      const sE = S.sOp * xb.op * (1 - S.fin);
+      const xa = extLook(dA);
+      const xb = extLook(dB);
+      const ia = intLook(dA);
+      const ib = intLook(dB);
+      const slideWaiting = S.sOp > 0.01 && !rS; // slide not loaded yet: keep yacht A's view (it is the slide's first frame)
+      const fE = rF ? Math.max(S.fOp * xa.op, slideWaiting ? xa.op : 0) : 0;
+      const sE = rS ? S.sOp * xb.op * (1 - S.fin) : 0;
       place(cvF, fE, xa.scale, xa.blur, salonA);
       place(cvS, sE, xb.scale, Math.max(xb.blur, S.sOp > 0 && S.fin > 0 ? finBlur : 0), salonB);
       place(cvIA, ia.op, ia.scale, ia.blur, salonA);
@@ -171,10 +179,10 @@ export default function Story() {
       // portrait screens crop a 16:9 frame to a narrow slice: pan that slice with the action (A, then B)
       const fxF = mobile ? 0.5 + 0.12 * smooth(0, 1, S.fProg) : 0.5;
       const fxS = mobile ? 0.62 - 0.26 * smooth(0, 1, S.sProg) : 0.5;
-      if (fE > 0.01) seqs.a_focus.draw(cvF, S.fProg, fxF, 0.5, settle);
-      if (sE > 0.01) seqs.ab_slide.draw(cvS, S.sProg, fxS, 0.5, settle);
-      if (ia.op > 0.01) seqs.a_interior.draw(cvIA, S.iaProg, 0.5, 0.5, settle);
-      if (ib.op > 0.01) seqs.b_interior.draw(cvIB, S.ibProg, 0.5, 0.5, settle);
+      if (fE > 0.01 || S.fOp > 0.01) seqs.a_focus.draw(cvF, S.fProg, fxF, 0.5, settle);
+      if (sE > 0.01 || S.sOp > 0.01) seqs.ab_slide.draw(cvS, S.sProg, fxS, 0.5, settle);
+      if (ia.op > 0.01 || S.dA > 0.001) seqs.a_interior.draw(cvIA, S.iaProg, 0.5, 0.5, settle);
+      if (ib.op > 0.01 || S.dB > 0.001) seqs.b_interior.draw(cvIB, S.ibProg, 0.5, 0.5, settle);
       for (const key of ["a_close", "b_close"] as const) {
         if (S[key] > 0) seqs[key].draw(winCanvas[key], S[key], 0.5, 0.5, settle);
       }
@@ -304,6 +312,7 @@ export default function Story() {
       animation: tl,
       onUpdate: (self) => {
         const t = self.progress * D;
+        updateRank(t);
         let a = 0;
         CHAPTERS.forEach((c, i) => {
           if (t >= (i === 0 ? 0 : c.t - 0.5)) a = i;
@@ -331,80 +340,72 @@ export default function Story() {
       });
     }, 3000);
 
-    /* ---------- loading: every clip is downloaded BEFORE the page opens ---------- */
+    /* ---------- loading: open fast, then stream everything behind the scenes ---------- */
     let alive = true;
-    let videoReady = false;
     const all = Object.values(seqs);
-    // visitors on a slow or data-saver connection keep a lighter path: first flight now, the rest as they scroll
-    const conn = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
-    const lean = !!conn && (!!conn.saveData || /(^|-)(2g|3g)$/.test(conn.effectiveType ?? ""));
-    const NEED = 12;
+    setSequenceRank(["a_focus", "a_interior", "a_close", "ab_slide", "b_interior", "b_close"]);
+    // tiny previews of EVERY clip first (~12 MB), then the full-HD frames nearest-first around the visitor
+    all.forEach((sq) => sq.start());
 
-    const onVideo = () => {
-      videoReady = true;
+    // the page opens as soon as the poster and the first preview frames are in (about a second)
+    let posterReady = false;
+    const poster = new Image();
+    poster.onload = poster.onerror = () => {
+      posterReady = true;
     };
-    if (ringVideo.readyState >= 3) onVideo();
-    ringVideo.addEventListener("canplay", onVideo, { once: true });
-    ringVideo.addEventListener("error", onVideo, { once: true });
+    poster.src = "img/ring-poster.webp";
 
+    let opened = false;
     const open = () => {
+      if (opened) return;
+      opened = true;
       setProgress(100);
       setTimeout(() => {
         if (!alive) return;
         setReady(true);
         lenis.start();
         render();
-      }, 450);
+        // the big hero loop starts streaming only now, so it never slows down the opening
+        ringVideo.src = "video/ring.mp4";
+        ringVideo.load();
+        if (!reduced) ringVideo.play().catch(() => {});
+      }, 350);
     };
-
-    let opened = false;
+    const NEED = 8;
     const poll = setInterval(() => {
       if (!alive || opened) return;
-      const known = all.every((sq) => sq.count > 0);
-      const total = all.reduce((n, sq) => n + sq.count, 0);
-      const loaded = all.reduce((n, sq) => n + sq.loaded, 0);
-      if (lean) {
-        const f = Math.min(1, seqs.a_focus.loaded / NEED);
-        setProgress(Math.round((videoReady ? 35 : 0) + f * 65));
-        if (videoReady && seqs.a_focus.loaded >= NEED) {
-          opened = true;
-          open();
-        }
-      } else {
-        // 100% only once every frame of every clip is in the browser, and the hero loop can play
-        setProgress(Math.min(99, Math.round((videoReady ? 8 : 0) + (known && total ? 92 * (loaded / total) : 0))));
-        if (videoReady && known && loaded >= total) {
-          opened = true;
-          open();
-        }
+      const f = Math.min(1, seqs.a_focus.loadedLite / NEED);
+      setProgress(Math.min(99, Math.round((posterReady ? 25 : 0) + 75 * f)));
+      if (posterReady && seqs.a_focus.loadedLite >= NEED) open();
+    }, 80);
+    // safety: never trap the visitor behind the loader
+    const failsafe = setTimeout(open, 8000);
+
+    // keep the shared download queue pointed at where the visitor is: nearest clip first, ahead before behind
+    const RANGES: [SeqName, number, number][] = [
+      ["a_focus", 0.25, 2.0],
+      ["a_interior", 3.8, 6.9],
+      ["a_close", 6.9, 9.3],
+      ["ab_slide", 10.4, 11.7],
+      ["b_interior", 13.4, 16.3],
+      ["b_close", 16.4, 18.8],
+    ];
+    let rankKey = "";
+    const updateRank = (t: number) => {
+      const order = RANGES.map(([n, a0, b0]) => [n, t >= a0 && t <= b0 ? 0 : t < a0 ? (a0 - t) * 0.9 : (t - b0) * 1.2] as const)
+        .sort((x, y) => x[1] - y[1])
+        .map((x) => x[0]);
+      const key = order.join();
+      if (key !== rankKey) {
+        rankKey = key;
+        setSequenceRank(order);
       }
-    }, 150);
+    };
 
-    if (lean) {
-      seqs.a_focus.start(6);
-      (async () => {
-        await seqs.a_focus.whenLoaded(NEED);
-        const order: SeqName[] = ["a_interior", "ab_slide", "a_close", "b_interior", "b_close"];
-        let prev: Sequence = seqs.a_focus;
-        for (const name of order) {
-          await prev.whenFraction(0.6);
-          if (!alive) return;
-          seqs[name].start(6);
-          prev = seqs[name];
-        }
-      })();
-    } else {
-      // everything at once (the host serves them over HTTP/2, so they download in parallel)
-      seqs.a_focus.start(8);
-      (["a_interior", "ab_slide", "a_close", "b_interior", "b_close"] as SeqName[]).forEach((name) => seqs[name].start(6));
+    // browser cache: after the first visit every frame is stored locally, so later visits are instant and fully sharp
+    if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
     }
-
-    // safety: never trap the visitor behind the loader if a download stalls
-    const failsafe = setTimeout(() => {
-      if (!alive || opened) return;
-      opened = true;
-      open();
-    }, lean ? 25000 : 240000);
 
     const onResize = () => {
       measure();
@@ -444,12 +445,11 @@ export default function Story() {
             <video
               data-ringvideo
               className="h-full w-full object-cover"
-              src="video/ring.mp4"
               poster="img/ring-poster.webp"
               muted
               loop
               playsInline
-              preload="auto"
+              preload="none"
             />
           </div>
           <canvas data-cv="focus" className="absolute inset-0 h-full w-full opacity-0 will-change-transform" />

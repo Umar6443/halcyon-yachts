@@ -4,6 +4,7 @@
   python3 tools/build_media.py <dir with ring_loop_v2.mp4, a_focus.mp4, ab_slide.mp4, a_interior.mp4,
                                 b_interior.mp4, 04_a_closeup.mp4, 07_b_closeup.mp4 and the detail PNGs>
   python3 tools/build_media.py <dir> a_focus        # rebuild just one segment
+  python3 tools/build_media.py --lite               # (re)make only the tiny preview frames
 
 Re-run it after replacing any source clip; nothing in the code has to change.
 
@@ -130,7 +131,40 @@ def build_sequence(src_dir, name, clip, ss, to, width, quality, threshold, maxga
     return manifest
 
 
+LITE_WIDTH = 512
+LITE_QUALITY = 38
+
+
+def _lite(args):
+    src, dst = args
+    im = Image.open(src).convert("RGB")
+    im = im.resize((LITE_WIDTH, round(LITE_WIDTH * im.height / im.width)), Image.LANCZOS)
+    im.save(dst, "WEBP", quality=LITE_QUALITY, method=6)
+
+
+def build_lite(name):
+    """Tiny previews of the exact frames already chosen for `name` (same manifest order and timing)."""
+    d = os.path.join(PUBLIC, "frames", name)
+    mp = os.path.join(d, "manifest.json")
+    m = json.load(open(mp))
+    out = os.path.join(d, "lite")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    jobs = [(os.path.join(d, f"f_{k + 1:03d}.webp"), os.path.join(out, f"f_{k + 1:03d}.webp")) for k in range(m["count"])]
+    with Pool(max(1, (os.cpu_count() or 2))) as pool:
+        pool.map(_lite, jobs)
+    m["lite"] = f"frames/{name}/lite/f_%03d.webp"
+    with open(mp, "w") as fh:
+        json.dump(m, fh)
+    size = sum(os.path.getsize(os.path.join(out, f)) for f in os.listdir(out)) / 1e6
+    print(f"{name} lite: {m['count']} frames, {size:.1f} MB")
+
+
 def main():
+    if sys.argv[1] == "--lite":
+        for name in SEGMENTS:
+            build_lite(name)
+        return
     src = sys.argv[1]
     os.makedirs(os.path.join(PUBLIC, "video"), exist_ok=True)
     os.makedirs(os.path.join(PUBLIC, "img"), exist_ok=True)
@@ -157,6 +191,7 @@ def main():
         if only and name not in only:
             continue
         build_sequence(src, name, *cfg)
+        build_lite(name)
 
     if only:
         return

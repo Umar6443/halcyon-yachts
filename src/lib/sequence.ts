@@ -1,27 +1,70 @@
 /**
- * Scroll-scrubbed WebP frame sequence.
+ * Scroll-scrubbed WebP frame sequence with progressive quality.
  *
- * - compressed frames are fetched in order (a few at a time) and kept as blobs,
- * - only a small window of frames around the playhead is decoded to bitmaps
- *   (full-HD bitmaps are ~8 MB each, so the window is kept tight),
- * - frames are NOT evenly spaced: the build keeps many frames where the camera
- *   moves fast and few where the shot is nearly still (manifest.ts = each frame's
- *   position 0..1 in the original clip), so blending two neighbours never smears,
- * - draw(canvas, t) cover-fits the frame at position t and cross-blends the two
- *   neighbours; once scrolling settles, draw(..., settle) snaps to a single
- *   pristine frame instead of leaving a half-blend on screen.
+ * Every clip exists in two tiers: a tiny "lite" preview of each frame (a few KB) and the full-HD frame.
+ *  - Lite frames for ALL clips are downloaded first (about 12 MB in total), so every animation works
+ *    from the first second of the visit.
+ *  - Full-HD frames then stream in behind the scenes, nearest-first around the visitor's position
+ *    (see setSequenceRank), and each one replaces its lite preview as soon as it has arrived.
+ *
+ * Frames are NOT evenly spaced: the build keeps many frames where the camera moves fast and few where
+ * the shot is nearly still (manifest.ts = each frame's position 0..1 in the original clip).
+ * Only a small window of frames around the playhead is decoded to bitmaps (full-HD bitmaps are ~8 MB each).
+ * draw(canvas, t) cover-fits the frame at position t and cross-blends the two neighbours; once scrolling
+ * settles, draw(..., settle) snaps to a single pristine frame.
  */
 
 type Bitmap = ImageBitmap | HTMLImageElement;
 
-type Manifest = { count: number; pattern: string; w: number; h: number; fps: number; ts?: number[] };
+type Manifest = { count: number; pattern: string; lite?: string; w: number; h: number; fps: number; ts?: number[] };
 
-/** frames decoded on each side of the playhead, plus a few more in the direction of travel */
 const WINDOW_SIDE = 6;
 const WINDOW_EXTRA = 5;
 const WINDOW_KEEP = 12;
-/** decodes running at once: enough to keep up, few enough not to starve the main thread */
 const DECODE_PARALLEL = 3;
+/** downloads running at once, across ALL clips */
+const FETCH_PARALLEL = 8;
+
+/* ---------- one shared download scheduler: lowest priority number goes first ---------- */
+
+type Job = { prio: () => number; run: () => Promise<void> };
+const jobs: Job[] = [];
+let activeFetches = 0;
+
+function pumpFetches() {
+  while (activeFetches < FETCH_PARALLEL && jobs.length) {
+    let best = 0;
+    let bestP = Infinity;
+    for (let i = 0; i < jobs.length; i++) {
+      const p = jobs[i].prio();
+      if (p < bestP) {
+        bestP = p;
+        best = i;
+      }
+    }
+    const [job] = jobs.splice(best, 1);
+    activeFetches++;
+    job
+      .run()
+      .catch(() => {})
+      .finally(() => {
+        activeFetches--;
+        pumpFetches();
+      });
+  }
+}
+
+/** queue any download; `prio` is re-read every time a slot frees up, so priorities can change live */
+export function scheduleFetch(prio: () => number, run: () => Promise<void>) {
+  jobs.push({ prio, run });
+  pumpFetches();
+}
+
+/** 0 = the clip the visitor is at (or heading to next), 1 = the one after it, ... */
+const rank: Record<string, number> = {};
+export function setSequenceRank(order: string[]) {
+  order.forEach((name, i) => (rank[name] = i));
+}
 
 async function decode(blob: Blob): Promise<{ bmp: Bitmap; url?: string }> {
   try {
@@ -40,15 +83,22 @@ async function decode(blob: Blob): Promise<{ bmp: Bitmap; url?: string }> {
   }
 }
 
+type Decoded = { bmp: Bitmap; url?: string; hd: boolean };
+
 export class Sequence {
   count = 0;
   w = 16;
   h = 9;
-  loaded = 0;
+  /** preview frames fetched / full-HD frames fetched */
+  loadedLite = 0;
+  loadedHd = 0;
   /** performance.now() of the last draw, used to free memory of sequences that are no longer on screen */
   lastDrawAt = 0;
-  private blobs: (Blob | null)[] = [];
-  private bitmaps = new Map<number, { bmp: Bitmap; url?: string }>();
+  /** true once at least one frame has been painted into a canvas (so the layer is no longer empty) */
+  hasPicture = false;
+  private lite: (Blob | null)[] = [];
+  private hd: (Blob | null)[] = [];
+  private bitmaps = new Map<number, Decoded>();
   private decoding = new Set<number>();
   /** frames we would like decoded, nearest to the playhead first */
   private want: number[] = [];
@@ -57,13 +107,13 @@ export class Sequence {
   private lastKey = "";
   private manifest: Manifest | null = null;
   private started = false;
-  private waiters: { n: number; resolve: () => void }[] = [];
+  private center = 0;
   lastT = 0;
 
   constructor(private name: string) {}
 
-  /** Start fetching frames. Safe to call more than once. */
-  start(concurrency = 4) {
+  /** Fetch the manifest, then queue every preview frame and every HD frame with the shared scheduler. */
+  start() {
     if (this.started) return;
     this.started = true;
     (async () => {
@@ -73,62 +123,79 @@ export class Sequence {
         this.count = m.count;
         this.w = m.w;
         this.h = m.h;
-        this.blobs = new Array(m.count).fill(null);
-        let next = 0;
-        const worker = async () => {
-          while (next < m.count) {
-            const i = next++;
-            const url = m.pattern.replace("%03d", String(i + 1).padStart(3, "0"));
-            try {
-              const b = await fetch(url).then((r) => r.blob());
-              this.blobs[i] = b;
-              this.loaded += 1;
-              if (i < 3) {
-                this.want.push(i);
-                this.pump();
-              }
-            } catch {
-              /* a missing frame is covered by the nearest decoded one */
-            }
-            this.flushWaiters();
+        this.lite = new Array(m.count).fill(null);
+        this.hd = new Array(m.count).fill(null);
+        const url = (pattern: string, i: number) => pattern.replace("%03d", String(i + 1).padStart(3, "0"));
+        for (let i = 0; i < m.count; i++) {
+          // previews: all clips, in order of the visitor's path, before anything else
+          if (m.lite) {
+            scheduleFetch(
+              () => 0 + (rank[this.name] ?? 9) * 0.01 + i * 1e-5,
+              async () => {
+                this.lite[i] = await fetch(url(m.lite!, i)).then((r) => r.blob());
+                this.loadedLite += 1;
+                this.afterArrival(i);
+              },
+            );
           }
-        };
-        await Promise.all(Array.from({ length: concurrency }, worker));
+          // full HD: nearest-first around the playhead, clip nearest the visitor first
+          scheduleFetch(
+            () => 10 + (rank[this.name] ?? 9) * 100 + Math.abs(i - this.center) / 1000,
+            async () => {
+              this.hd[i] = await fetch(url(m.pattern, i)).then((r) => r.blob());
+              this.loadedHd += 1;
+              this.afterArrival(i);
+            },
+          );
+        }
       } catch {
-        /* sequence stays empty; callers check .ready */
+        /* sequence stays empty; callers check .count */
       }
     })();
   }
 
-  get ready() {
-    return this.count > 0 && this.bitmaps.size > 0;
+  /** a frame just arrived: if it is near the playhead, decode it now (and let a preview be upgraded) */
+  private afterArrival(i: number) {
+    if (Math.abs(i - this.center) <= WINDOW_SIDE + WINDOW_EXTRA) {
+      if (!this.want.includes(i)) this.want.push(i);
+      this.pump();
+    }
   }
 
-  /** resolves once the first n frames have been fetched */
-  whenLoaded(n: number) {
-    if (this.loaded >= n) return Promise.resolve();
-    return new Promise<void>((resolve) => this.waiters.push({ n, resolve }));
+  /** resolves once the first n preview frames have been fetched */
+  async whenLiteLoaded(n: number) {
+    while (!(this.count > 0 && this.loadedLite >= Math.min(n, this.count))) await new Promise((r) => setTimeout(r, 60));
   }
 
-  private flushWaiters() {
-    this.waiters = this.waiters.filter((w) => {
-      if (this.loaded >= w.n) {
-        w.resolve();
-        return false;
-      }
-      return true;
-    });
+  /** how much of this clip's full-HD frames have arrived, 0..1 */
+  get hdFraction() {
+    return this.count ? this.loadedHd / this.count : 0;
+  }
+
+  /** a frame is worth decoding if it has no picture yet, or only a preview while its HD frame has arrived */
+  private needsDecode(k: number) {
+    if (k < 0 || k >= this.count || this.decoding.has(k)) return false;
+    const have = this.bitmaps.get(k);
+    if (!have) return !!(this.hd[k] || this.lite[k]);
+    return !have.hd && !!this.hd[k];
   }
 
   /** start decodes (nearest first) until DECODE_PARALLEL are running */
   private pump() {
     while (this.decoding.size < DECODE_PARALLEL) {
-      const i = this.want.find((k) => k >= 0 && k < this.count && !this.bitmaps.has(k) && !this.decoding.has(k) && this.blobs[k]);
+      const i = this.want.find((k) => this.needsDecode(k));
       if (i === undefined) return;
+      const useHd = !!this.hd[i];
+      const blob = (useHd ? this.hd[i] : this.lite[i])!;
       this.decoding.add(i);
-      decode(this.blobs[i]!)
+      decode(blob)
         .then((d) => {
-          this.bitmaps.set(i, d);
+          const old = this.bitmaps.get(i);
+          this.bitmaps.set(i, { ...d, hd: useHd });
+          if (old) {
+            if (old.bmp instanceof ImageBitmap) old.bmp.close();
+            if (old.url) URL.revokeObjectURL(old.url);
+          }
           if (this.needed.has(i)) {
             this.lastKey = ""; // the picture on screen can now be made of a better frame
             this.onDecoded?.();
@@ -159,7 +226,7 @@ export class Sequence {
   }
 
   private manageWindow(center: number, dir: number) {
-    // a small symmetric window around the playhead (nearest first), plus a few extra frames in the direction of travel
+    this.center = center;
     const want: number[] = [];
     for (let d = 0; d <= WINDOW_SIDE; d++) {
       want.push(center + d);
@@ -178,11 +245,6 @@ export class Sequence {
   /** free every decoded frame (compressed frames stay); decoding restarts on the next draw */
   releaseBitmaps() {
     for (const idx of Array.from(this.bitmaps.keys())) this.closeBitmap(idx);
-  }
-
-  /** resolves once a fraction (0..1) of the compressed frames has been fetched */
-  async whenFraction(f: number) {
-    while (!(this.count > 0 && this.loaded >= Math.ceil(this.count * f))) await new Promise((r) => setTimeout(r, 80));
   }
 
   private nearest(i: number): Bitmap | null {
@@ -257,7 +319,8 @@ export class Sequence {
     const place = (src: Bitmap) => {
       const sw = (src as HTMLImageElement).width;
       const sh = (src as HTMLImageElement).height;
-      const s = Math.max(cw / sw, ch / sh);
+      // previews are smaller than the HD frames: always scale by the clip's real frame size
+      const s = Math.max(cw / this.w, ch / this.h) * (this.w / sw);
       const dw = sw * s;
       const dh = sh * s;
       const dx = (cw - dw) * fx;
@@ -267,6 +330,7 @@ export class Sequence {
 
     ctx.globalAlpha = 1;
     ctx.drawImage(f0, ...place(f0));
+    this.hasPicture = true;
     let complete = true;
     if (a > 0.02 && a < 1 && i1 !== i0) {
       const f1 = this.bitmaps.get(i1)?.bmp;
@@ -278,7 +342,9 @@ export class Sequence {
         complete = false; // repaint when the second frame has decoded
       }
     }
-    if (complete && this.bitmaps.has(first)) this.lastKey = key;
+    // only remember this paint once it is made of the best frames available (otherwise repaint when they arrive)
+    const have = this.bitmaps.get(first);
+    if (complete && have && (have.hd || !this.hd[first])) this.lastKey = key;
   }
 
   dispose() {
