@@ -24,9 +24,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <head>
         {/* the first picture: start fetching it before any script runs */}
-        {/* (portrait screens get the portrait crop; the same split as heroVariant() in lib/seqs.ts) */}
-        <link rel="preload" as="image" href={`${basePath}/img/hero-poster.webp`} media="(min-aspect-ratio: 20/21)" type="image/webp" fetchPriority="low" />
-        <link rel="preload" as="image" href={`${basePath}/img/hero-poster-p.webp`} media="(max-aspect-ratio: 20/21)" type="image/webp" fetchPriority="low" />
+        <link rel="preload" as="image" href={`${basePath}/img/hero-poster.webp`} type="image/webp" fetchPriority="high" />
       </head>
       <body className={`${serif.variable} ${sans.variable} ${mono.variable} antialiased`}>{children}</body>
     </html>

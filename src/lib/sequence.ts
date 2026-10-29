@@ -61,54 +61,44 @@ async function getWithRetry<T>(url: string, read: (r: Response) => Promise<T>, t
   throw err;
 }
 
-/* ---------- one shared download scheduler ----------
- * Sequences register themselves; whenever a request slot frees up, every sequence that still has frames to fetch
- * proposes its single most useful next frame and the best proposal wins. That is a few hundred cheap comparisons
- * per request, instead of re-sorting one queue of every frame of every sequence (which, with ~1,000 queued
- * frames, cost seconds of main-thread time on phones). */
+/* ---------- one shared download scheduler: lowest priority number first ---------- */
 
-type Candidate = { i: number; prio: number };
-interface Source {
-  next(): Candidate | null;
-  fetchFrame(i: number): Promise<void>;
-}
-const sources = new Set<Source>();
+type Job = { prio: () => number; run: () => Promise<void> };
+const jobs: Job[] = [];
 let active = 0;
 let activeBackground = 0;
-let pumpQueued = false;
 
 function pump() {
-  pumpQueued = false;
-  while (active < MAX_PARALLEL) {
-    let best: Source | null = null;
-    let bestC: Candidate | null = null;
-    for (const src of sources) {
-      const c = src.next();
-      if (!c) continue;
-      if (c.prio >= FOREGROUND_LANE && activeBackground >= MAX_BACKGROUND) continue;
-      if (!bestC || c.prio < bestC.prio) {
-        bestC = c;
-        best = src;
+  while (active < MAX_PARALLEL && jobs.length) {
+    let best = -1;
+    let bestP = Infinity;
+    for (let i = 0; i < jobs.length; i++) {
+      const p = jobs[i].prio();
+      if (p >= FOREGROUND_LANE && activeBackground >= MAX_BACKGROUND) continue;
+      if (p < bestP) {
+        bestP = p;
+        best = i;
       }
     }
-    if (!best || !bestC) return;
-    const bg = bestC.prio >= FOREGROUND_LANE;
+    if (best < 0) return;
+    const [job] = jobs.splice(best, 1);
+    const bg = bestP >= FOREGROUND_LANE;
     active++;
     if (bg) activeBackground++;
-    best
-      .fetchFrame(bestC.i)
+    job
+      .run()
       .catch(() => {})
       .finally(() => {
         active--;
         if (bg) activeBackground--;
-        schedulePump();
+        pump();
       });
   }
 }
-function schedulePump() {
-  if (pumpQueued) return;
-  pumpQueued = true;
-  queueMicrotask(pump);
+
+export function schedule(prio: () => number, run: () => Promise<void>) {
+  jobs.push({ prio, run });
+  pump();
 }
 
 export const levelOf = (i: number, count: number) => (i % 8 === 0 || i === count - 1 ? 0 : i % 4 === 0 ? 1 : i % 2 === 0 ? 2 : 3);
@@ -171,16 +161,9 @@ export class Sequence {
   lastT = 0;
   private dir = 1;
   private planFi = -99;
-  private query = "";
-  private requested = new Uint8Array(0);
-  private levelIdx: number[][] = [[], [], [], []];
-  private pending = 0;
-  private disposed = false;
-  /** finest level this sequence may fetch for now (a yacht that is only hovered fetches level 0) */
-  private maxLevel = 3;
 
   constructor(
-    readonly name: string,
+    private name: string,
     private loop = false,
   ) {}
 
@@ -226,15 +209,8 @@ export class Sequence {
   get complete() {
     return this.count > 0 && this.loaded + this.failed >= this.count;
   }
-  setMaxLevel(n: number) {
-    if (n === this.maxLevel) return;
-    this.maxLevel = n;
-    schedulePump();
-  }
   setLane(lane: number) {
-    if (lane === this.lane) return;
     this.lane = lane;
-    schedulePump();
   }
 
   /** Fetch the manifest (with retries), then queue every frame with the shared scheduler. */
@@ -263,54 +239,30 @@ export class Sequence {
         this.bytesTotal += sizes[i];
       }
       this.resolveManifest();
-      this.query = m.v ? `?v=${m.v}` : "";
-      this.requested = new Uint8Array(m.count);
-      this.levelIdx = [[], [], [], []];
-      for (let i = 0; i < m.count; i++) this.levelIdx[levelOf(i, m.count)].push(i);
-      this.pending = m.count;
-      if (this.disposed) return;
-      sources.add(this);
-      schedulePump();
-    })();
-  }
-
-  /** the most useful frame to fetch next: coarse frames everywhere first, then finer ones nearest the playhead */
-  next(): Candidate | null {
-    if (this.pending === 0) return null;
-    let best: Candidate | null = null;
-    for (let l = 0; l <= this.maxLevel; l++) {
-      if (best && best.prio <= this.lane + l * 50) break; // nothing in a finer level can beat it
-      const arr = this.levelIdx[l];
-      for (let k = 0; k < arr.length; k++) {
-        const i = arr[k];
-        if (this.requested[i]) continue;
-        const prio = this.lane + l * 50 + this.dist(i, this.center) * 0.25;
-        if (!best || prio < best.prio) best = { i, prio };
+      const q = m.v ? `?v=${m.v}` : "";
+      for (let i = 0; i < m.count; i++) {
+        const l = levelOf(i, m.count);
+        const url = m.pattern.replace("%03d", String(i + 1).padStart(3, "0")) + q;
+        schedule(
+          // coarse frames everywhere first, then finer ones, each level nearest the playhead first
+          () => this.lane + l * 50 + this.dist(i, this.center) * 0.25 + (this.loop ? 0 : 0),
+          async () => {
+            try {
+              const blob = await getWithRetry(url, (r) => r.blob());
+              this.blobs[i] = blob;
+              this.loaded++;
+              this.bytesLoaded += blob.size;
+              this.levelBytesLoaded[l] += sizes[i];
+              this.arrived(i);
+            } catch {
+              this.failed++;
+              this.failedSet.add(i);
+            }
+            this.levelDoneFrames[l]++;
+          },
+        );
       }
-    }
-    return best;
-  }
-
-  async fetchFrame(i: number) {
-    this.requested[i] = 1;
-    this.pending--;
-    if (this.pending === 0) sources.delete(this);
-    const m = this.manifest!;
-    const l = levelOf(i, m.count);
-    const size = m.sizes ? m.sizes[i] : 200000;
-    const url = m.pattern.replace("%03d", String(i + 1).padStart(3, "0")) + this.query;
-    try {
-      const blob = await getWithRetry(url, (r) => r.blob());
-      this.blobs[i] = blob;
-      this.loaded++;
-      this.bytesLoaded += blob.size;
-      this.levelBytesLoaded[l] += size;
-      this.arrived(i);
-    } catch {
-      this.failed++;
-      this.failedSet.add(i);
-    }
-    this.levelDoneFrames[l]++;
+    })();
   }
 
   /** a frame just arrived: decode it now if it sits near the playhead */
@@ -512,10 +464,7 @@ export class Sequence {
     return null;
   }
 
-  /** drop this sequence for good (the other orientation's film replaced it): stop fetching, free memory */
   dispose() {
-    this.disposed = true;
-    sources.delete(this);
     this.want = [];
     this.releaseBitmaps();
     this.bitmaps.clear();

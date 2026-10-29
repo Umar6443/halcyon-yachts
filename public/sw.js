@@ -4,7 +4,7 @@
  * served from an old cache entry; manifests themselves are always fetched fresh (cache only as an offline fallback).
  * Bump CACHE to drop everything. Never touches range requests (video streaming) or anything that failed.
  */
-const CACHE = "blocktide-media-v3";
+const CACHE = "blocktide-media-v2";
 
 self.addEventListener("install", () => self.skipWaiting());
 
