@@ -29,7 +29,10 @@ export type Manifest = {
   v?: string;
 };
 
-const DECODE_PARALLEL = typeof navigator !== "undefined" && (navigator.hardwareConcurrency || 4) <= 4 ? 2 : 3;
+const CORES = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+const DECODE_PARALLEL = CORES <= 4 ? 2 : 3;
+/** the hero film decodes one more at a time, so it keeps pace with a fast scroll */
+const DECODE_PARALLEL_FILM = CORES <= 2 ? 2 : CORES <= 4 ? 3 : 4;
 // decoded frames kept around the playhead (a full-HD bitmap is ~8 MB, so phones keep fewer)
 const SMALL = typeof window !== "undefined" && window.matchMedia("(max-width: 800px)").matches;
 const WINDOW = SMALL ? 6 : 10;
@@ -161,6 +164,10 @@ export class Sequence {
   lastT = 0;
   private dir = 1;
   private planFi = -99;
+  /** playhead speed in frames per ms (smoothed), and how long one decode takes here (ms, smoothed) */
+  private vel = 0;
+  private lastDrawT = 0;
+  private decodeMs = 30;
 
   constructor(
     private name: string,
@@ -276,10 +283,30 @@ export class Sequence {
     this.pumpDecode();
   }
 
-  /** the downloaded frames nearest the playhead, nearest first (plus a few ahead in the direction of travel) */
+  /**
+   * Which downloaded frames to decode next. At rest: the ones nearest the playhead. While it moves: the frames it is
+   * about to reach, aimed one decode-time ahead and spaced so decoding keeps pace with the scroll (every frame when
+   * slow, every 2nd-8th when fast), so the frame on screen is always close to the scroll position instead of trailing it.
+   */
   private plan() {
     const want: number[] = [];
     const c = Math.round(this.fi);
+    const speed = Math.abs(this.vel); // frames per ms
+    if (!this.loop && speed > 0.004) { // (the hero film only; the 360 loops keep their plan)
+      const perDecode = this.decodeMs / DECODE_PARALLEL_FILM; // ms between two finished decodes
+      const stride = Math.max(1, Math.min(8, Math.round(speed * perDecode)));
+      const lead = Math.min(40, Math.round(speed * this.decodeMs));
+      const add = (k: number) => {
+        const f = this.nearestBlob(this.idx(k));
+        if (f >= 0 && !want.includes(f)) want.push(f);
+      };
+      add(c);
+      for (let k = 0; want.length < WINDOW && k < WINDOW * 2; k++) add(c + this.dir * (lead + k * stride));
+      add(c - this.dir); // in case the visitor turns round
+      this.want = want;
+      this.planFi = this.fi;
+      return;
+    }
     for (let d = 0; d < this.count && want.length < WINDOW; d++) {
       const a = this.loop ? ((c + d) % this.count) : c + d;
       const b = this.loop ? (((c - d) % this.count) + this.count) % this.count : c - d;
@@ -294,13 +321,26 @@ export class Sequence {
     this.planFi = this.fi;
   }
 
+  /** the downloaded frame nearest index i (i itself when it has arrived) */
+  private nearestBlob(i: number) {
+    for (let d = 0; d < 8; d++) {
+      const a = this.idx(i + d * this.dir);
+      if (this.blobs[a]) return a;
+      const b = this.idx(i - d * this.dir);
+      if (this.blobs[b]) return b;
+    }
+    return -1;
+  }
+
   private pumpDecode() {
-    while (this.decoding.size < DECODE_PARALLEL) {
+    while (this.decoding.size < (this.loop ? DECODE_PARALLEL : DECODE_PARALLEL_FILM)) {
       const i = this.want.find((k) => this.blobs[k] && !this.bitmaps.has(k) && !this.decoding.has(k));
       if (i === undefined) return;
       this.decoding.add(i);
+      const t0 = performance.now();
       decode(this.blobs[i]!)
         .then((d) => {
+          this.decodeMs = this.decodeMs * 0.8 + (performance.now() - t0) * 0.2;
           this.bitmaps.set(i, d);
           this.lastKey = "";
           this.onDecoded?.();
@@ -328,7 +368,13 @@ export class Sequence {
   private evict() {
     if (this.bitmaps.size <= KEEP) return;
     const c = Math.round(this.fi);
-    const keys = Array.from(this.bitmaps.keys()).sort((a, b) => this.dist(b, c) - this.dist(a, c));
+    // frames behind the direction of travel go first; the ones ahead are about to be shown
+    const score = (k: number) => {
+      if (this.loop) return this.dist(k, c);
+      const d = (k - c) * this.dir;
+      return d < 0 ? -d * 2 : d;
+    };
+    const keys = Array.from(this.bitmaps.keys()).sort((a, b) => score(b) - score(a));
     for (const k of keys) {
       if (this.bitmaps.size <= KEEP) break;
       this.closeBitmap(k);
@@ -381,10 +427,15 @@ export class Sequence {
     let delta = fi - this.fi;
     if (this.loop) delta = delta > this.count / 2 ? delta - this.count : delta < -this.count / 2 ? delta + this.count : delta;
     if (Math.abs(delta) > 1e-6) this.dir = delta >= 0 ? 1 : -1;
+    const now = performance.now();
+    const dt = now - this.lastDrawT;
+    this.lastDrawT = now;
+    this.vel = dt > 0 && dt < 200 ? this.vel * 0.6 + (delta / dt) * 0.4 : delta === 0 ? 0 : this.vel;
     this.fi = fi;
     this.center = Math.round(fi) % this.count;
     this.lastT = t;
-    if (Math.abs(fi - this.planFi) > 1 || this.want.length === 0) {
+    if (Math.abs(fi - this.planFi) > 1 || this.want.length === 0 || (settle && Math.abs(this.vel) > 0)) {
+      if (settle) this.vel = 0;
       this.planFi = fi;
       this.plan();
       this.pumpDecode();
@@ -400,7 +451,8 @@ export class Sequence {
     if (iLo >= 0 && iHi >= 0 && iLo !== iHi) {
       const gap = this.loop ? ((iHi - iLo + this.count) % this.count) : iHi - iLo;
       const pos = this.loop ? ((fi - iLo + this.count) % this.count) : fi - iLo;
-      if (gap <= 3 && !settle) {
+      // (no blend while the film moves more than a frame per screen refresh: nobody can see it, and it doubles the drawing)
+      if (gap <= 3 && !settle && (this.loop || Math.abs(this.vel) * 16 < 1)) {
         first = iLo;
         second = iHi;
         a = Math.min(1, Math.max(0, pos / gap));
