@@ -22,6 +22,10 @@ export const viewport: Viewport = { themeColor: "#050b16", width: "device-width"
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        {/* the first picture: start fetching it before any script runs */}
+        <link rel="preload" as="image" href={`${basePath}/img/hero-poster.webp`} type="image/webp" fetchPriority="high" />
+      </head>
       <body className={`${serif.variable} ${sans.variable} ${mono.variable} antialiased`}>{children}</body>
     </html>
   );

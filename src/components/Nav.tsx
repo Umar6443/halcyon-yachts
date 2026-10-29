@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { BRAND } from "@/data/site";
 import { onScroll, scrollToTarget } from "@/lib/scroll";
+import { useLoadState } from "@/lib/loadstate";
 
 const LINKS = [
   { label: "Fleet", href: "#fleet" },
@@ -11,7 +12,8 @@ const LINKS = [
   { label: "Contact", href: "#contact" },
 ];
 
-export default function Nav({ visible }: { visible: boolean }) {
+export default function Nav() {
+  const visible = useLoadState().ready;
   const bar = useRef<HTMLElement>(null);
 
   // a solid bar once the page has left the top (plain background, no blur over the moving film)

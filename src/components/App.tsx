@@ -1,25 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import type { YachtId } from "@/data/site";
-import { destroyScroll, initScroll, startScroll, stopScroll } from "@/lib/scroll";
-import { startBackgroundLoad } from "@/lib/seqs";
+import { destroyScroll, initScroll, stopScroll } from "@/lib/scroll";
 import Loader from "./Loader";
 import Nav from "./Nav";
 import Hero from "./Hero";
 import YachtViewer from "./YachtViewer";
 import { About, Contact, Events, Fleet } from "./Sections";
 
+const FleetM = memo(Fleet);
+const EventsM = memo(Events);
+const AboutM = memo(About);
+const ContactM = memo(Contact);
+
 export default function App() {
-  const [progress, setProgress] = useState(0);
-  const [ready, setReady] = useState(false);
   const [open, setOpen] = useState<YachtId | null>(null);
-  const [, setActive] = useState(0);
 
   useEffect(() => {
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     initScroll(reduced);
-    stopScroll(); // the page stays still until the film has loaded
+    stopScroll(); // the page stays still for the moment the first pass of the film loads (the film starts it)
     window.history.scrollRestoration = "manual";
     window.scrollTo(0, 0);
     // media cache: after the first visit every frame comes from the browser, so later visits open instantly
@@ -41,34 +42,27 @@ export default function App() {
           }
         }
       },
-      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
+      { rootMargin: "0px 0px -6% 0px", threshold: 0.05 },
     );
     document.querySelectorAll("[data-reveal]").forEach((n) => io.observe(n));
     return () => io.disconnect();
   }, []);
 
-  const onReady = useCallback(() => {
-    setReady(true);
-    startScroll();
-    // the yacht loops come in quietly once the film is in
-    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback;
-    if (idle) idle(startBackgroundLoad);
-    else setTimeout(startBackgroundLoad, 800);
-  }, []);
   const close = useCallback(() => setOpen(null), []);
+  const show = useCallback((id: YachtId) => setOpen(id), []);
 
   return (
     <>
-      <Loader progress={progress} done={ready} />
-      <Nav visible={ready} />
+      <Loader />
+      <Nav />
       <main>
-        <Hero onProgress={setProgress} onReady={onReady} onOpenYacht={setOpen} onActive={setActive} />
-        <Fleet onOpen={setOpen} />
-        <Events onOpen={setOpen} />
-        <About />
+        <Hero onOpenYacht={show} />
+        <FleetM onOpen={show} />
+        <EventsM onOpen={show} />
+        <AboutM />
       </main>
-      <Contact />
-      {open && <YachtViewer id={open} onClose={close} onSwitch={setOpen} />}
+      <ContactM />
+      {open && <YachtViewer id={open} onClose={close} onSwitch={show} />}
     </>
   );
 }

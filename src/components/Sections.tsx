@@ -3,13 +3,13 @@
 import { FormEvent, useState } from "react";
 import { ArrowUpRight, CalendarDays, MapPin } from "lucide-react";
 import { ABOUT, BRAND, EVENTS, YACHTS, type YachtId } from "@/data/site";
-import { prioritiseYacht } from "@/lib/seqs";
+import { hintYacht } from "@/lib/seqs";
 
 /* ---------------------------------------------------------------- fleet */
 
 export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
   return (
-    <section id="fleet" className="cv-auto relative bg-[var(--bg)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="fleet-h">
+    <section id="fleet" className="relative bg-[var(--bg)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="fleet-h">
       <div className="mx-auto max-w-[1500px]">
         <header className="grid items-end gap-8 md:grid-cols-[1.3fr_1fr]">
           <div data-reveal>
@@ -28,8 +28,8 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
             <li key={y.id} data-reveal style={{ ["--d" as string]: `${i * 0.08}s` }}>
               <button
                 onClick={() => onOpen(y.id)}
-                onPointerEnter={() => prioritiseYacht(y.id)}
-                onFocus={() => prioritiseYacht(y.id)}
+                onPointerEnter={() => hintYacht(y.id)}
+                onFocus={() => hintYacht(y.id)}
                 className="group relative block w-full overflow-hidden rounded-sm bg-[#0a1424] text-left"
                 style={{ ["--accent" as string]: y.accent }}
                 aria-label={`Open ${y.name}, ${y.theme}`}
@@ -39,7 +39,6 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
                   <img
                     src={y.beam}
                     alt={`${y.name}: a 24 m catamaran dressed for ${y.theme.toLowerCase()} events`}
-                    loading="lazy"
                     decoding="async"
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-[1.2s] ease-out group-hover:scale-[1.05]"
                   />
@@ -72,7 +71,7 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
 
 export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
   return (
-    <section id="events" className="cv-auto relative bg-[var(--bg2)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="events-h">
+    <section id="events" className="relative bg-[var(--bg2)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="events-h">
       <div className="mx-auto max-w-[1500px]">
         <div data-reveal>
           <p className="font-mono text-[10px] tracking-[0.4em] text-[var(--accent)]">UPCOMING EVENTS &amp; EXPERIENCES</p>
@@ -101,7 +100,7 @@ export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
                     <p className="mt-1.5 flex items-center gap-2 text-sm text-white/50">
                       <MapPin size={13} /> {e.place}
                     </p>
-                    <button onClick={() => onOpen(y.id)} onPointerEnter={() => prioritiseYacht(y.id)} className="btn-ghost mt-auto self-start !mt-7">
+                    <button onClick={() => onOpen(y.id)} onPointerEnter={() => hintYacht(y.id)} className="btn-ghost mt-auto self-start !mt-7">
                       View the yacht <ArrowUpRight size={14} />
                     </button>
                   </div>
@@ -119,7 +118,7 @@ export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
 
 export function About() {
   return (
-    <section id="about" className="cv-auto relative bg-[var(--bg)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="about-h">
+    <section id="about" className="relative bg-[var(--bg)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="about-h">
       <div className="mx-auto grid max-w-[1500px] items-center gap-14 md:grid-cols-[1fr_1fr] md:gap-20">
         <div>
           <p data-reveal className="font-mono text-[10px] tracking-[0.4em] text-[var(--accent)]">ABOUT {BRAND.name}</p>
@@ -144,7 +143,7 @@ export function About() {
         </div>
         <div data-reveal className="relative">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="img/ring-poster.webp" alt="Eight yachts anchored in a ring in the Adriatic" loading="lazy" decoding="async" className="aspect-[4/5] w-full rounded-sm object-cover object-[48%_60%] md:aspect-[5/6]" />
+          <img src="img/hero-poster.webp" alt="Eight yachts anchored in a ring in the Adriatic" loading="lazy" decoding="async" className="aspect-[4/5] w-full rounded-sm object-cover object-[48%_60%] md:aspect-[5/6]" />
           <p className="absolute bottom-4 left-4 font-mono text-[10px] tracking-[0.3em] text-white/80">THE FLEET AT ANCHOR · ADRIATIC</p>
         </div>
       </div>
@@ -165,7 +164,7 @@ export function Contact() {
   };
 
   return (
-    <footer id="contact" className="cv-auto relative bg-[#030811] text-[var(--cream)]" aria-labelledby="contact-h">
+    <footer id="contact" className="relative bg-[#030811] text-[var(--cream)]" aria-labelledby="contact-h">
       <div className="mx-auto grid max-w-[1500px] gap-14 px-5 py-24 sm:px-10 md:grid-cols-2 md:px-[6vw] md:py-36">
         <div>
           <p data-reveal className="font-mono text-[10px] tracking-[0.4em] text-[var(--accent)]">CONTACT · EVENT ENQUIRIES</p>

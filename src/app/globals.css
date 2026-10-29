@@ -79,12 +79,6 @@ html.lenis body {
   }
 }
 
-/* sections below the film are only rendered when they are near the viewport */
-.cv-auto {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 900px;
-}
-
 /* reveal on scroll: transform + opacity only */
 .reveal-ready [data-reveal] {
   opacity: 0;

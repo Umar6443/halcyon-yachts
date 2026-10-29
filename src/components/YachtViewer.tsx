@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CalendarDays, Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { YACHTS, type Yacht, type YachtId } from "@/data/site";
-import { prioritiseYacht } from "@/lib/seqs";
+import { hintYacht, viewYacht } from "@/lib/seqs";
 import { startScroll, stopScroll } from "@/lib/scroll";
 import Rotator from "./Rotator";
 import Booking from "./Booking";
@@ -57,8 +57,9 @@ export default function YachtViewer({ id, onClose, onSwitch }: { id: YachtId; on
   useEffect(() => {
     setTab("360");
     setBooking(false);
-    prioritiseYacht(id);
+    viewYacht(id); // every download goes to this yacht while it is open
     panel.current?.scrollTo({ top: 0 });
+    return () => viewYacht(null);
   }, [id]);
 
   useEffect(() => {
@@ -92,7 +93,7 @@ export default function YachtViewer({ id, onClose, onSwitch }: { id: YachtId; on
               <button
                 key={y.id}
                 onClick={() => onSwitch(y.id)}
-                onPointerEnter={() => prioritiseYacht(y.id)}
+                onPointerEnter={() => hintYacht(y.id)}
                 aria-current={y.id === id}
                 className={`flex shrink-0 items-center gap-2 rounded-full px-3 py-2 font-mono text-[10px] tracking-[0.22em] transition-colors ${
                   y.id === id ? "bg-white/10 text-white" : "text-white/55 hover:text-white"

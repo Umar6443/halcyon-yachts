@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Minus, Pause, Play, Plus, RotateCcw } from "lucide-react";
 import type { Yacht } from "@/data/site";
-import { prioritiseYacht, yachtSeq } from "@/lib/seqs";
+import { yachtSeq } from "@/lib/seqs";
 
 /**
  * Drag-to-rotate 360 degree view of one yacht.
@@ -34,6 +34,7 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
   const canvas = useRef<HTMLCanvasElement>(null);
   const still = useRef<HTMLImageElement>(null);
   const [pct, setPct] = useState(0);
+  const [coarse, setCoarse] = useState(false);
   const [auto, setAuto] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [hint, setHint] = useState(true);
@@ -81,19 +82,20 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
     if (!active) return;
     const s = st.current;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    prioritiseYacht(yacht.id);
     let raf = 0;
     let last = performance.now();
     let alive = true;
     let lastPct = -1;
 
+    // opens on the starboard beam: the same view as the card photo
     seq.manifestReady.then(() => {
-      if (!s.started && seq.marks.d) {
-        s.pos = (seq.marks.d[0] + seq.marks.d[1]) / 2; // opens on the starboard beam: the same view as the card photo
+      if (!s.started) {
+        if (seq.marks.d) s.pos = (seq.marks.d[0] + seq.marks.d[1]) / 2;
         s.started = true;
         s.needsPaint = true;
       }
     });
+    const startTimer = setTimeout(() => (s.started = true), 1500);
     seq.onDecoded = () => {
       s.needsPaint = true;
     };
@@ -149,10 +151,11 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
           setLabel(l);
         }
       }
-      const p = Math.round(seq.hdFraction * 100);
+      const p = Math.round(seq.fraction * 100);
       if (p !== lastPct) {
         lastPct = p;
         setPct(p);
+        setCoarse(!seq.levelReady(0));
       }
     };
     raf = requestAnimationFrame(frame);
@@ -164,6 +167,7 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
     window.addEventListener("resize", onResize);
     return () => {
       alive = false;
+      clearTimeout(startTimer);
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
       seq.onDecoded = undefined;
@@ -291,11 +295,11 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
       </div>
 
       {/* view buttons */}
-      <div className="absolute inset-x-0 bottom-4 flex flex-col items-center gap-3 md:bottom-5">
+      <div className="pointer-events-none absolute inset-x-0 bottom-4 flex flex-col items-center gap-3 md:bottom-5">
         {hint && (
           <p className="pointer-events-none rounded-full bg-black/40 px-4 py-1.5 font-mono text-[10px] tracking-[0.3em] text-white/80">DRAG TO ROTATE · SCROLL TO ZOOM</p>
         )}
-        <div className="flex flex-wrap items-center justify-center gap-2 px-3">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 px-3">
           {yacht.views.map((v) => (
             <button
               key={v.label}
@@ -331,9 +335,14 @@ export default function Rotator({ yacht, active }: { yacht: Yacht; active: boole
       </div>
 
       {pct < 100 && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-white/10">
-          <div className="h-full bg-[var(--accent)] transition-[width] duration-200" style={{ width: `${pct}%` }} />
-        </div>
+        <>
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-white/10">
+            <div className="h-full bg-[var(--accent)] transition-[width] duration-200" style={{ width: `${pct}%` }} />
+          </div>
+          <p className="pointer-events-none absolute bottom-16 left-4 rounded-full bg-black/45 px-3 py-1.5 font-mono text-[9px] tracking-[0.25em] text-white/70 md:bottom-5 md:left-6">
+            {coarse ? "LOADING 360° VIEW" : "OPTIMISING QUALITY"} {pct}%
+          </p>
+        </>
       )}
     </div>
   );

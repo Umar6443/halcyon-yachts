@@ -15,7 +15,7 @@ Source dir layout (file names, not paths):
 What it makes (all under public/):
   frames/hero/            one scroll-scrubbed journey: ring -> descent -> full 360 orbit -> boarding -> salon
   frames/<yacht>/         one seamless 360 degree loop per yacht (drag to rotate)
-  video/ring.mp4          the idle loop of the opening scene (forward + reverse = endless)
+  video/ring-loop.mp4          the idle loop of the opening scene (forward + reverse = endless)
   img/                    web stills
 
 How the sequences are made
@@ -26,10 +26,13 @@ How the sequences are made
   that every kept frame is the same amount of visual change apart. Fast camera moves keep many frames, slow
   stretches few. The hero maps scroll to real time (manifest `ts`); the yacht loops map a drag to frame index,
   which makes a drag rotate the yacht at an even speed.
-- A tiny preview of every frame (`lite/`) is made too; it is only an emergency fallback on very slow links.
+- The site loads each sequence progressively (every 8th frame first, then every 4th, 2nd, the rest), so the
+  frame order here only has to be a clean timeline; `manifest.json` carries each frame's byte size and a content
+  version used to key the browser cache.
 Needs ffmpeg, Pillow and numpy.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -85,7 +88,6 @@ LOOP_WRAP = 8  # frames blended so the last frame of a loop leads straight back 
 
 HERO = dict(width=1920, quality=75, target=400)
 YACHT = dict(width=1600, quality=78, target=180)
-LITE_WIDTH, LITE_QUALITY = 512, 38
 
 # source still -> (output name, width, quality)
 IMAGES = {
@@ -110,7 +112,7 @@ IMAGES = {
     "media_interior_salon.png": ("media-salon", 1672, 84),
     "media_event.png": ("media-event", 1672, 82),
     "8 hero_int_door.png": ("meme-deck", 1672, 84),
-    "5 hero_ring.png": ("ring-poster", 1920, 86),
+    "5 hero_ring.png": ("hero-poster", 1920, 86),
 }
 
 
@@ -241,13 +243,6 @@ def _write(args):
     a.save(dst, "WEBP", quality=quality, method=5)
 
 
-def _lite(args):
-    src, dst = args
-    im = Image.open(src).convert("RGB")
-    im = im.resize((LITE_WIDTH, round(LITE_WIDTH * im.height / im.width)), Image.LANCZOS)
-    im.save(dst, "WEBP", quality=LITE_QUALITY, method=6)
-
-
 def build_sequence(src, name, pieces, cfg, time_based, wrap=0, marks_from=None):
     print(f"[{name}] assembling...")
     counts = {c: nframes(src, c) for c in {p[0] for p in pieces}}
@@ -305,29 +300,37 @@ def build_sequence(src, name, pieces, cfg, time_based, wrap=0, marks_from=None):
         marks.setdefault(key, []).append([pos(idxs[0]), pos(idxs[-1])])
     manifest["marks"] = {k: [min(a for a, _ in v), max(b for _, b in v)] for k, v in marks.items()}
 
-    # tiny previews + exact byte sizes (loading progress is real)
-    lite_dir = os.path.join(out, "lite")
-    os.makedirs(lite_dir)
-    with Pool(max(1, os.cpu_count() or 2)) as pool:
-        pool.map(_lite, [(os.path.join(out, f"f_{k + 1:03d}.webp"), os.path.join(lite_dir, f"f_{k + 1:03d}.webp")) for k in range(len(keep))], chunksize=8)
-    manifest["lite"] = f"frames/{name}/lite/f_%03d.webp"
-    manifest["sizes"] = [os.path.getsize(os.path.join(out, f"f_{k + 1:03d}.webp")) for k in range(len(keep))]
-    with open(os.path.join(out, "manifest.json"), "w") as fh:
-        json.dump(manifest, fh)
-    mb = sum(manifest["sizes"]) / 1e6
-    lite_mb = sum(os.path.getsize(os.path.join(lite_dir, f)) for f in os.listdir(lite_dir)) / 1e6
-    print(f"[{name}] {len(keep)} frames {w}x{h}: {mb:.1f} MB HD + {lite_mb:.1f} MB previews; marks {manifest['marks']}")
+    finalize(name)
+
+
+def finalize(name):
+    """exact byte size of every frame (the loader's progress is real) + a content version the site puts on frame
+    URLs, so a rebuilt sequence can never be served from an old cache entry"""
+    d = os.path.join(PUBLIC, "frames", name)
+    mp = os.path.join(d, "manifest.json")
+    m = json.load(open(mp))
+    m.pop("lite", None)
+    shutil.rmtree(os.path.join(d, "lite"), ignore_errors=True)
+    m["sizes"] = [os.path.getsize(os.path.join(d, f"f_{k + 1:03d}.webp")) for k in range(m["count"])]
+    h = hashlib.sha1()
+    for k in range(m["count"]):
+        with open(os.path.join(d, f"f_{k + 1:03d}.webp"), "rb") as fh:
+            h.update(fh.read(4096))
+    m["v"] = h.hexdigest()[:8]
+    with open(mp, "w") as fh:
+        json.dump(m, fh)
+    print(f"[{name}] {m['count']} frames {m['w']}x{m['h']}: {sum(m['sizes']) / 1e6:.1f} MB, version {m['v']}, marks {m.get('marks')}")
 
 
 def build_ring(src):
     """the opening scene's idle loop: forward then reverse so it never jumps"""
-    out = os.path.join(PUBLIC, "video", "ring.mp4")
+    out = os.path.join(PUBLIC, "video", "ring-loop.mp4")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    run(["ffmpeg", "-y", "-v", "error", "-i", clip_path(src, "hero_ring_loop"), "-filter_complex",
+    run(["ffmpeg", "-y", "-v", "error", "-t", "5", "-i", clip_path(src, "hero_ring_loop"), "-filter_complex",
          "[0:v]setpts=PTS-STARTPTS,fps=24,split[a][b];[b]reverse[r];[a][r]concat=n=2:v=1[v]", "-map", "[v]", "-an",
-         "-c:v", "libx264", "-preset", "slow", "-tune", "film", "-crf", "21", "-profile:v", "high", "-pix_fmt", "yuv420p",
+         "-c:v", "libx264", "-preset", "slow", "-tune", "film", "-crf", "25", "-profile:v", "high", "-pix_fmt", "yuv420p",
          "-movflags", "+faststart", out])
-    print(f"[ring] ring.mp4 {os.path.getsize(out) / 1e6:.1f} MB")
+    print(f"[ring] ring-loop.mp4 {os.path.getsize(out) / 1e6:.1f} MB")
 
 
 def build_images(src):
@@ -358,6 +361,9 @@ def main():
     want = lambda k: not only or k in only  # noqa: E731
     if want("ring"):
         build_ring(src)
+    if want("finalize"):
+        for n in ["hero", *YACHT_PIECES]:
+            finalize(n)
     if want("images"):
         build_images(src)
     if want("hero"):

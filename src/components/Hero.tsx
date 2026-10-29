@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { ArrowDown } from "lucide-react";
 import { BRAND, YACHTS, type YachtId } from "@/data/site";
-import { Sequence, setSequenceRank } from "@/lib/sequence";
-import { onScroll, scrollToTarget, scrollY } from "@/lib/scroll";
-import { prioritiseYacht } from "@/lib/seqs";
+import { loadState } from "@/lib/loadstate";
+import { onScroll, scrollToTarget, scrollY, startScroll } from "@/lib/scroll";
+import { heroSeq, hintYacht, setHeroVisible, startBackgroundLoad } from "@/lib/seqs";
 
 /**
  * The opening film: eight themed yachts at anchor in a ring, the camera drops to one of them, circles it once
@@ -30,19 +30,10 @@ const smooth = (a: number, b: number, x: number) => {
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-type Props = {
-  onProgress: (pct: number) => void;
-  onReady: () => void;
-  onOpenYacht: (id: YachtId) => void;
-  onActive: (i: number) => void;
-};
-
 const FEATURED = YACHTS[0];
 
-export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Props) {
+function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
   const wrap = useRef<HTMLElement>(null);
-  const cb = useRef({ onProgress, onReady, onActive });
-  cb.current = { onProgress, onReady, onActive };
 
   useEffect(() => {
     const el = wrap.current;
@@ -55,14 +46,14 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
     const compass = el.querySelector<HTMLElement>("[data-compass]")!;
     const compassLabel = el.querySelector<HTMLElement>("[data-compass-label]")!;
     const compassDeg = el.querySelector<HTMLElement>("[data-compass-deg]")!;
+    const pill = el.querySelector<HTMLElement>("[data-hdpill]")!;
     const fades = Array.from(el.querySelectorAll<HTMLElement>("[data-fade]")).map((node) => {
       const [a, b, c, d] = node.dataset.fade!.split(",").map(Number);
       return { node, a, b, c, d, dy: Number(node.dataset.dy ?? 24) };
     });
 
     /* ---------- the film ---------- */
-    const seq = new Sequence("hero");
-    setSequenceRank(["hero"]);
+    const seq = heroSeq();
     let dEnd = 0.2;
     let aStart = 0.8;
     let iStart = 0.9;
@@ -108,7 +99,6 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
     let u = 0;
     let queued = false;
     let visible = true;
-    let activeIdx = -1;
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
     let compassText = "";
 
@@ -117,7 +107,8 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
       if (!visible) return;
 
       // opening ring loop sits on top until the descent begins
-      const ringOp = 1 - smooth(U.hold - 0.05, U.hold + 0.3, u);
+      // (and for as long as the film has no picture of its own, so there is never an empty frame)
+      const ringOp = seq.hasPicture ? 1 - smooth(U.hold - 0.05, U.hold + 0.3, u) : 1;
       css(ringWrap, "opacity", ringOp.toFixed(3));
       if (!reduced) {
         if (ringOp < 0.01 && !ringVideo.paused) ringVideo.pause();
@@ -146,11 +137,6 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
       }
 
       css(bar, "transform", `scaleX(${(u / D).toFixed(4)})`);
-      const idx = u < U.hold + 0.3 ? 0 : u < U.descent ? 1 : u < U.orbit ? 2 : u < U.approach ? 3 : 4;
-      if (idx !== activeIdx) {
-        activeIdx = idx;
-        cb.current.onActive(idx);
-      }
 
       // once the picture is at rest, redraw with one pristine frame (no half-blend left on screen)
       if (!settle) {
@@ -170,83 +156,84 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
       const inView = y + vh > top - 50 && y < top + height + 50;
       if (inView !== visible) {
         visible = inView;
+        setHeroVisible(inView);
         if (!inView) {
           if (!ringVideo.paused) ringVideo.pause();
           setTimeout(() => !visible && seq.releaseBitmaps(), 3000);
-        } else seq.invalidate();
+        } else {
+          seq.invalidate();
+          requestRender();
+        }
       }
-      if (next !== u || !visible) {
+      if (next !== u && visible) {
         u = next;
-        requestRender();
-      }
+        // draw straight away: this runs inside the scroll tick, so the picture follows the scroll in the same frame
+        render();
+      } else if (next !== u) u = next;
     };
     const offScroll = onScroll(update);
 
-    /* ---------- loading: everything in full quality, with a true progress figure ---------- */
+    /* ---------- loading ----------
+     * The site opens as soon as the first, coarse pass of the film (level 0: every 8th frame, a few MB) and the
+     * opening loop are in. Everything else keeps arriving behind it, nearest the visitor first, and never blocks. */
     let alive = true;
     let opened = false;
+    const t0 = performance.now();
     seq.start();
 
     let posterReady = false;
     const poster = new Image();
     poster.onload = poster.onerror = () => (posterReady = true);
-    poster.src = "img/ring-poster.webp";
+    poster.src = "img/hero-poster.webp";
 
-    let ringLoaded = 0;
-    let ringTotal = 30e6;
-    let ringDone = false;
-    let ringUrl = "";
-    (async () => {
-      try {
-        const res = await fetch("video/ring.mp4");
-        ringTotal = Number(res.headers.get("content-length")) || ringTotal;
-        const reader = res.body!.getReader();
-        const chunks: Uint8Array[] = [];
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          ringLoaded += value.length;
-        }
-        ringUrl = URL.createObjectURL(new Blob(chunks as BlobPart[], { type: "video/mp4" }));
-        ringVideo.src = ringUrl;
-        ringVideo.load();
-      } catch {
-        ringVideo.src = "video/ring.mp4";
-      }
-      ringDone = true;
-    })();
+    ringVideo.muted = true;
+    ringVideo.playbackRate = 0.8;
 
     const open = () => {
       if (opened) return;
       opened = true;
-      cb.current.onProgress(100);
+      loadState.set({ progress: 100, note: "" });
       setTimeout(() => {
         if (!alive) return;
         measure();
         update(scrollY());
         render();
+        // the opening loop starts streaming now (its poster, the same picture, is on screen until it plays)
+        ringVideo.src = "video/ring-loop.mp4";
         if (!reduced) ringVideo.play().catch(() => {});
-        cb.current.onReady();
-      }, 350);
+        loadState.set({ ready: true });
+        startScroll();
+        startBackgroundLoad();
+      }, 300);
     };
     const poll = setInterval(() => {
-      if (!alive || opened) return;
-      const known = seq.bytesTotal > 0;
-      const total = seq.bytesTotal + ringTotal;
-      const got = seq.bytesLoaded + ringLoaded;
-      cb.current.onProgress(Math.min(99, known ? Math.round((got / total) * 100) : 0));
-      if (posterReady && ringDone && known && seq.count > 0 && seq.loadedHd >= seq.count) open();
-    }, 100);
-    // very slow connection: open anyway and fetch the tiny previews so the film is never an empty layer
-    const failsafe = setTimeout(() => {
-      if (opened) return;
-      seq.enableLite();
-      open();
-    }, 120000);
-
-    ringVideo.muted = true;
-    ringVideo.playbackRate = 0.8;
+      if (!alive) return;
+      const sec = (performance.now() - t0) / 1000;
+      if (!opened) {
+        const known = seq.count > 0;
+        // the gate: the first quarter of the film at its coarse level (a couple of MB). The opening loop never gates
+        // it: until the video can play, its poster (the same picture) is on screen.
+        const g = known ? seq.gate(0, 0.26) : { done: false, fraction: 0 };
+        loadState.set({
+          progress: Math.min(99, Math.round(known ? 8 + g.fraction * 90 : 3)),
+          note: sec > 12 && !known ? "Still connecting…" : sec > 7 ? "Slow connection: the rest keeps loading in the background" : "",
+        });
+        if (posterReady && g.done) open();
+        else if (sec > 9 && posterReady && seq.loaded >= 3) open(); // slow link: start with what has arrived
+        else if (sec > 40) open();
+        return;
+      }
+      // after opening: a small, quiet indicator while the film is still refining
+      if (seq.count > 0) {
+        const pct = Math.round(seq.fraction * 100);
+        const done = seq.complete;
+        css(pill, "opacity", done ? "0" : "1");
+        if (!done && pill.dataset.pct !== String(pct)) {
+          pill.dataset.pct = String(pct);
+          pill.lastElementChild!.textContent = `${pct}%`;
+        }
+      }
+    }, 120);
 
     // free decoded frames when the film has been out of view for a while (full-quality bitmaps are large)
     const memory = setInterval(() => {
@@ -265,13 +252,11 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
 
     return () => {
       alive = false;
-      clearTimeout(failsafe);
       clearTimeout(settleTimer);
       clearInterval(poll);
       clearInterval(memory);
       offScroll();
       window.removeEventListener("resize", onResize);
-      if (ringUrl) URL.revokeObjectURL(ringUrl);
       seq.dispose();
     };
   }, []);
@@ -284,11 +269,17 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
         {/* the film */}
         <canvas data-cv className="absolute inset-0 h-full w-full" role="img" aria-label="Eight themed yachts at anchor in an Adriatic bay; the camera circles one of them and steps aboard" />
         <div data-ringwrap className="absolute inset-0">
-          <video data-ringvideo className="h-full w-full object-cover" poster="img/ring-poster.webp" muted loop playsInline preload="none" aria-hidden />
+          <video data-ringvideo className="h-full w-full object-cover" poster="img/hero-poster.webp" muted loop playsInline preload="none" aria-hidden />
         </div>
 
         {/* legibility gradients */}
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(4,10,22,.66)_0%,rgba(4,10,22,.22)_42%,transparent_70%),linear-gradient(0deg,rgba(4,10,22,.7)_0%,transparent_34%),linear-gradient(180deg,rgba(4,10,22,.62)_0%,transparent_22%)]" />
+
+        {/* quiet "still refining" indicator while the rest of the film arrives */}
+        <div data-hdpill className="pointer-events-none absolute bottom-4 right-4 z-30 flex items-center gap-2 rounded-full bg-black/45 px-3 py-1.5 font-mono text-[9px] tracking-[0.25em] text-white/70 opacity-0 transition-opacity duration-700 md:bottom-5 md:right-6" aria-hidden>
+          <span>OPTIMISING QUALITY</span>
+          <span>0%</span>
+        </div>
 
         {/* progress hairline */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-30 h-[2px] bg-white/10">
@@ -315,7 +306,7 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
               <li key={y.id}>
                 <button
                   onClick={() => onOpenYacht(y.id)}
-                  onPointerEnter={() => prioritiseYacht(y.id)}
+                  onPointerEnter={() => hintYacht(y.id)}
                   className="group flex items-center gap-2.5 rounded-full border border-white/20 bg-black/30 px-4 py-2.5 backdrop-blur-sm transition-colors hover:border-white/60"
                 >
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: y.accent, boxShadow: `0 0 10px ${y.accent}` }} />
@@ -416,3 +407,5 @@ export default function Hero({ onProgress, onReady, onOpenYacht, onActive }: Pro
     </section>
   );
 }
+
+export default memo(Hero);
