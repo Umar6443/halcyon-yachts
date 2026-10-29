@@ -2,10 +2,11 @@
 
 import { memo, useEffect, useRef } from "react";
 import { ArrowDown } from "lucide-react";
-import { BRAND, YACHTS, type YachtId } from "@/data/site";
+import { BRAND, YACHTS } from "@/data/site";
 import { loadState } from "@/lib/loadstate";
 import { onScroll, scrollToTarget, scrollY, startScroll } from "@/lib/scroll";
-import { heroSeq, hintYacht, setHeroVisible, startBackgroundLoad } from "@/lib/seqs";
+import { heroSeq, heroVariant, hintYacht, setHeroVisible } from "@/lib/seqs";
+import { openYacht, prefetchViewer } from "@/lib/viewer";
 
 /**
  * The opening film: eight themed yachts at anchor in a ring, the camera drops to one of them, circles it once
@@ -32,7 +33,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 const FEATURED = YACHTS[0];
 
-function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
+function Hero() {
   const wrap = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -53,17 +54,27 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
     });
 
     /* ---------- the film ---------- */
-    const seq = heroSeq();
+    // phones and portrait screens get the portrait crop of the film, its poster and its opening loop
+    let portrait = heroVariant() === "hero-p";
+    const posterSrc = () => (portrait ? "img/hero-poster-p.webp" : "img/hero-poster.webp");
+    const ringSrc = () => (portrait ? "video/ring-loop-p.mp4" : "video/ring-loop.mp4");
+    ringVideo.poster = posterSrc();
+    let seq = heroSeq();
     let dEnd = 0.2;
     let aStart = 0.8;
     let iStart = 0.9;
-    seq.manifestReady.then(() => {
-      const m = seq.marks;
-      if (m.hero_descent) dEnd = m.hero_descent[1];
-      if (m.hero_approach) aStart = m.hero_approach[0];
-      if (m.hero_interior) iStart = m.hero_interior[0];
-      requestRender();
-    });
+    const bindSeq = () => {
+      const s = seq;
+      s.onDecoded = () => requestRender();
+      s.manifestReady.then(() => {
+        if (s !== seq) return;
+        const m = s.marks;
+        if (m.hero_descent) dEnd = m.hero_descent[1];
+        if (m.hero_approach) aStart = m.hero_approach[0];
+        if (m.hero_interior) iStart = m.hero_interior[0];
+        requestRender();
+      });
+    };
 
     /** scroll units -> position in the film (0..1) */
     const filmAt = (u: number) => {
@@ -112,7 +123,7 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
       css(ringWrap, "opacity", ringOp.toFixed(3));
       if (!reduced) {
         if (ringOp < 0.01 && !ringVideo.paused) ringVideo.pause();
-        else if (ringOp >= 0.01 && ringVideo.paused && opened) ringVideo.play().catch(() => {});
+        else if (ringOp >= 0.01 && ringVideo.paused && ringStarted) ringVideo.play().catch(() => {});
       }
 
       seq.draw(cv, filmAt(u), 0.5, 0.5, settle);
@@ -149,7 +160,7 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
       queued = true;
       requestAnimationFrame(() => render());
     };
-    seq.onDecoded = requestRender;
+    bindSeq();
 
     const update = (y: number) => {
       const next = clamp01((y - top) / span) * D;
@@ -178,13 +189,14 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
      * opening loop are in. Everything else keeps arriving behind it, nearest the visitor first, and never blocks. */
     let alive = true;
     let opened = false;
+    let ringStarted = false;
     const t0 = performance.now();
     seq.start();
 
     let posterReady = false;
     const poster = new Image();
     poster.onload = poster.onerror = () => (posterReady = true);
-    poster.src = "img/hero-poster.webp";
+    poster.src = posterSrc();
 
     ringVideo.muted = true;
     ringVideo.playbackRate = 0.8;
@@ -198,13 +210,9 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
         measure();
         update(scrollY());
         render();
-        // the opening loop starts streaming now (its poster, the same picture, is on screen until it plays)
-        ringVideo.src = "video/ring-loop.mp4";
-        if (!reduced) ringVideo.play().catch(() => {});
         loadState.set({ ready: true });
         startScroll();
-        startBackgroundLoad();
-      }, 300);
+      }, 200);
     };
     const poll = setInterval(() => {
       if (!alive) return;
@@ -218,10 +226,18 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
           progress: Math.min(99, Math.round(known ? 8 + g.fraction * 90 : 3)),
           note: sec > 12 && !known ? "Still connecting…" : sec > 7 ? "Slow connection: the rest keeps loading in the background" : "",
         });
-        if (posterReady && g.done) open();
-        else if (sec > 9 && posterReady && seq.loaded >= 3) open(); // slow link: start with what has arrived
-        else if (sec > 40) open();
+        // the poster (the same picture as the film's first frame) is enough to open on, at most 1.5 s into the visit:
+        // the ring loop sits over the canvas until the film has a picture of its own, so nothing empty is ever shown
+        if (posterReady && (g.done || performance.now() > 1500)) open();
+        else if (sec > 6) open();
         return;
+      }
+      // the opening loop streams once the film's first pass is in, so the two never compete for the line
+      // (its poster, the same picture, is on screen until it plays)
+      if (!ringStarted && ((seq.count > 0 && seq.gate(0, 0.26).done) || sec > 4)) {
+        ringStarted = true;
+        ringVideo.src = ringSrc();
+        if (!reduced) ringVideo.play().catch(() => {});
       }
       // after opening: a small, quiet indicator while the film is still refining
       if (seq.count > 0) {
@@ -241,6 +257,20 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
     }, 3000);
 
     const onResize = () => {
+      // turning a phone or tablet switches between the portrait and landscape films
+      const p = heroVariant() === "hero-p";
+      if (p !== portrait) {
+        portrait = p;
+        seq.onDecoded = undefined;
+        seq = heroSeq();
+        bindSeq();
+        seq.start();
+        ringVideo.poster = posterSrc();
+        if (ringStarted) {
+          ringVideo.src = ringSrc();
+          if (!reduced) ringVideo.play().catch(() => {});
+        }
+      }
       measure();
       seq.invalidate();
       update(scrollY());
@@ -257,7 +287,8 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
       clearInterval(memory);
       offScroll();
       window.removeEventListener("resize", onResize);
-      seq.dispose();
+      seq.onDecoded = undefined;
+      seq.releaseBitmaps();
     };
   }, []);
 
@@ -269,7 +300,7 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
         {/* the film */}
         <canvas data-cv className="absolute inset-0 h-full w-full" role="img" aria-label="Eight themed yachts at anchor in an Adriatic bay; the camera circles one of them and steps aboard" />
         <div data-ringwrap className="absolute inset-0">
-          <video data-ringvideo className="h-full w-full object-cover" poster="img/hero-poster.webp" muted loop playsInline preload="none" aria-hidden />
+          <video data-ringvideo className="h-full w-full object-cover" muted loop playsInline preload="none" aria-hidden />
         </div>
 
         {/* legibility gradients */}
@@ -305,8 +336,11 @@ function Hero({ onOpenYacht }: { onOpenYacht: (id: YachtId) => void }) {
             {YACHTS.map((y) => (
               <li key={y.id}>
                 <button
-                  onClick={() => onOpenYacht(y.id)}
-                  onPointerEnter={() => hintYacht(y.id)}
+                  onClick={() => openYacht(y.id)}
+                  onPointerEnter={() => {
+                    prefetchViewer();
+                    hintYacht(y.id);
+                  }}
                   className="group flex items-center gap-2.5 rounded-full border border-white/20 bg-black/30 px-4 py-2.5 backdrop-blur-sm transition-colors hover:border-white/60"
                 >
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: y.accent, boxShadow: `0 0 10px ${y.accent}` }} />

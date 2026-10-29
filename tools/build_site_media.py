@@ -112,7 +112,7 @@ IMAGES = {
     "media_interior_salon.png": ("media-salon", 1672, 84),
     "media_event.png": ("media-event", 1672, 82),
     "8 hero_int_door.png": ("meme-deck", 1672, 84),
-    "5 hero_ring.png": ("hero-poster", 1920, 86),
+    "5 hero_ring.png": ("hero-poster", 1920, 78),
 }
 
 
@@ -322,6 +322,40 @@ def finalize(name):
     print(f"[{name}] {m['count']} frames {m['w']}x{m['h']}: {sum(m['sizes']) / 1e6:.1f} MB, version {m['v']}, marks {m.get('marks')}")
 
 
+# Lighter derivatives for phones, made from the finished frames (so they match them exactly):
+#  hero-p: the centre of every hero frame as a portrait 864x1080 crop (a phone only ever shows that part of the
+#          16:9 film, so it is the same picture at ~40 % of the bytes)
+#  <yacht>-s: the 360 loops at 1024 px wide, for the viewer on small screens
+VARIANTS = {"hero-p": ("hero", "crop", 864, 1080, 78), **{f"{y}-s": (y, "scale", 1024, 576, 78) for y in YACHT_PIECES}}
+
+
+def _derive(args):
+    src, dst, mode, w, h, q = args
+    im = Image.open(src).convert("RGB")
+    if mode == "crop":
+        x = (im.width - w) // 2
+        im = im.crop((x, 0, x + w, h))
+    else:
+        im = im.resize((w, h), Image.LANCZOS)
+    im.save(dst, "WEBP", quality=q, method=5)
+
+
+def build_variants():
+    for name, (base, mode, w, h, q) in VARIANTS.items():
+        bd = os.path.join(PUBLIC, "frames", base)
+        m = json.load(open(os.path.join(bd, "manifest.json")))
+        out = os.path.join(PUBLIC, "frames", name)
+        shutil.rmtree(out, ignore_errors=True)
+        os.makedirs(out)
+        jobs = [(os.path.join(bd, f"f_{k + 1:03d}.webp"), os.path.join(out, f"f_{k + 1:03d}.webp"), mode, w, h, q) for k in range(m["count"])]
+        with Pool(max(1, os.cpu_count() or 2)) as pool:
+            pool.map(_derive, jobs, chunksize=8)
+        m.update({"pattern": f"frames/{name}/f_%03d.webp", "w": w, "h": h})
+        with open(os.path.join(out, "manifest.json"), "w") as fh:
+            json.dump(m, fh)
+        finalize(name)
+
+
 def build_ring(src):
     """the opening scene's idle loop: forward then reverse so it never jumps"""
     out = os.path.join(PUBLIC, "video", "ring-loop.mp4")
@@ -331,6 +365,10 @@ def build_ring(src):
          "-c:v", "libx264", "-preset", "slow", "-tune", "film", "-crf", "25", "-profile:v", "high", "-pix_fmt", "yuv420p",
          "-movflags", "+faststart", out])
     print(f"[ring] ring-loop.mp4 {os.path.getsize(out) / 1e6:.1f} MB")
+    outp = os.path.join(PUBLIC, "video", "ring-loop-p.mp4")
+    run(["ffmpeg", "-y", "-v", "error", "-i", out, "-vf", "crop=864:1080", "-an", "-c:v", "libx264", "-preset", "slow", "-tune", "film",
+         "-crf", "25", "-profile:v", "high", "-pix_fmt", "yuv420p", "-movflags", "+faststart", outp])
+    print(f"[ring] ring-loop-p.mp4 {os.path.getsize(outp) / 1e6:.1f} MB")
 
 
 def build_images(src):
@@ -342,6 +380,15 @@ def build_images(src):
         if im.width != width:
             im = im.resize((width, round(width * im.height / im.width)), Image.LANCZOS)
         im.save(os.path.join(out, short + ".webp"), "WEBP", quality=quality, method=6)
+    # 960 px copies of the stills shown in cards (srcset picks them on small screens / 1x displays)
+    for short in [v[0] for v in IMAGES.values() if v[0].endswith(("-beam", "-event"))] + ["hero-poster"]:
+        im = Image.open(os.path.join(out, short + ".webp")).convert("RGB")
+        im.resize((960, round(960 * im.height / im.width)), Image.LANCZOS).save(os.path.join(out, short + "-960.webp"), "WEBP", quality=80, method=6)
+    # portrait poster for phones (the centre of the opening frame, like the portrait film)
+    im = Image.open(os.path.join(src, "img", "5 hero_ring.png")).convert("RGB")
+    im = im.resize((1920, round(1920 * im.height / im.width)), Image.LANCZOS)
+    x = (im.width - 864) // 2
+    im.crop((x, 0, x + 864, 1080)).save(os.path.join(out, "hero-poster-p.webp"), "WEBP", quality=82, method=6)
     # social preview
     im = Image.open(os.path.join(src, "img", "5 hero_ring.png")).convert("RGB")
     w, h = 1200, 630
@@ -361,6 +408,8 @@ def main():
     want = lambda k: not only or k in only  # noqa: E731
     if want("ring"):
         build_ring(src)
+    if want("variants"):
+        build_variants()
     if want("finalize"):
         for n in ["hero", *YACHT_PIECES]:
             finalize(n)

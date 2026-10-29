@@ -21,9 +21,11 @@ GITHUB_PAGES=true NEXT_PUBLIC_BASE_PATH=/halcyon-yachts npm run build   # static
 4. **Upcoming events**, **About**, **Contact / event enquiries** (opens the visitor's email app).
 
 ## How it stays fast
-- **Progressive loading (the main fix).** Every film is a sequence of full-quality WebP frames, loaded in passes: every 8th frame first (a couple of MB: enough to scrub or rotate anywhere), then every 4th, 2nd, and the rest, each pass nearest the visitor first. The site opens as soon as the first quarter of the film's coarse pass is in (about 1-3 s on a normal connection, ~6-10 s on a very slow one), never after the whole ~80 MB. Until a frame has arrived the nearest one that has is shown, so the picture is always sharp, only sparser, and a small "optimising quality" pill shows the rest arriving. (An earlier version waited for every frame before opening: 73 s at 12 Mbps, and on slower links it timed out into low-resolution previews.)
+- **Progressive loading (the main fix).** Every film is a sequence of full-quality WebP frames, loaded in passes: every 8th frame first (a couple of MB: enough to scrub or rotate anywhere), then every 4th, 2nd, and the rest, each pass nearest the visitor first. The site opens as soon as the opening picture is in (about 2 s on a 12 Mbps line, under 4 s on a slow 4G phone), never after the whole film; the opening loop sits over the film until its first frames arrive. Until a frame has arrived the nearest one that has is shown, so the picture is always sharp, only sparser, and a small "optimising quality" pill shows the rest arriving. (An earlier version waited for every frame before opening: 73 s at 12 Mbps, and on slower links it timed out into low-resolution previews.)
 - **Robust downloads.** One scheduler runs 8 requests at a time (3 for background work), foreground strictly before background. Every request has a timeout and is retried with back-off; a frame that still fails is skipped and never blocks anything. With 10 % of requests deliberately dropped the site still loads and works.
-- **Bandwidth goes where the visitor is.** Hero frames while the film is in view; the opened yacht's frames while the viewer is open; hovering a yacht moves it ahead of the other background loads; the four yacht loops fill in quietly after the hero. The opening loop (7 MB) starts streaming only when the site opens.
+- **Bandwidth goes where the visitor is.** Hero frames while the film is in view; the opened yacht's frames while the viewer is open. Yacht loops are never preloaded: pointing at a yacht fetches the viewer's code and that yacht's coarse pass, and the rest loads only once it is open. The opening loop starts streaming only after the film's first pass is in, so the two never compete.
+- **Lighter files for smaller screens.** Phones and portrait tablets get a portrait crop of the film (`frames/hero-p`, half the bytes), its own poster and opening loop; screens under 700 px get 1024 px yacht loops (`frames/*-s`); card images come with 960 px copies picked by `srcset` and load lazily.
+- **Less JavaScript on the page.** Fleet, events, about and contact render on the server; only the yacht buttons and the enquiry form are client islands. The 360° viewer (rotator, rooms, booking) is its own chunk, fetched when a visitor points at a yacht.
 - **One canvas, one film.** The hero is a single pre-assembled frame sequence drawn on one canvas. The dissolves between the generated clips are baked into the frames at build time, so nothing is blended, blurred or filtered live while scrolling. The canvas never renders more pixels than the source has.
 - **Frames by motion.** The build keeps more frames where the camera moves fast (`tools/build_site_media.py`); only a small window around the playhead is decoded to bitmaps, and phones keep fewer.
 - **No animation library.** Scroll position maps straight to a film position; the picture is drawn inside the scroll tick (no extra frame of delay); overlays are plain elements whose opacity/transform are written only when they change. Lenis is the only thing smoothing the scroll. Loading progress lives in a tiny external store, so it never re-renders the page.
@@ -35,17 +37,19 @@ GITHUB_PAGES=true NEXT_PUBLIC_BASE_PATH=/halcyon-yachts npm run build   # static
 |---|---|
 | All copy, yacht names, specs, prices, dates | `src/data/site.ts` (**placeholders: replace with the client's content**) |
 | The scroll film (phases, overlays, loader logic) | `src/components/Hero.tsx` |
+| Page shell (scroll, reveals, loader, nav, viewer) | `src/components/App.tsx`, `src/app/page.tsx` |
 | Drag-to-rotate 360° | `src/components/Rotator.tsx` |
 | Full-screen yacht viewer, details, interior, gallery | `src/components/YachtViewer.tsx` |
 | Booking flow (visual only) | `src/components/Booking.tsx` |
-| Fleet, events, about, contact | `src/components/Sections.tsx` |
+| Fleet, events, about, contact | `src/components/Sections.tsx` (+ `OpenYacht.tsx`, `ContactForm.tsx`) |
 | Frame-sequence engine (loops, marks, scheduler) | `src/lib/sequence.ts` |
+| Which film each screen gets, bandwidth lanes | `src/lib/seqs.ts` |
 | Smooth scroll | `src/lib/scroll.ts` |
 | Turn the generated clips and stills into web assets | `tools/build_site_media.py` |
 
 ## Replacing media
 `python3 tools/build_site_media.py <source dir>` rebuilds everything from the source clips and stills
-(see the docstring for the expected file names); `... hero`, `... meme`, `... images` rebuild one part.
+(see the docstring for the expected file names); `... hero`, `... meme`, `... images` rebuild one part; `... variants` rebuilds the portrait / small-screen copies.
 Each clip's usable frame range (it skips the dissolves / hard cuts the generator put into some clips) and the
 cross-dissolves between clips are listed at the top of the script. Bump `CACHE` in `public/sw.js` after rebuilding.
 It needs ffmpeg, Pillow and numpy.

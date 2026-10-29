@@ -1,21 +1,18 @@
 "use client";
 
-import { memo, useCallback, useEffect, useState } from "react";
-import type { YachtId } from "@/data/site";
+import { useEffect } from "react";
+import dynamic from "next/dynamic";
 import { destroyScroll, initScroll, stopScroll } from "@/lib/scroll";
+import { closeYacht, openYacht, useOpenYacht } from "@/lib/viewer";
 import Loader from "./Loader";
 import Nav from "./Nav";
-import Hero from "./Hero";
-import YachtViewer from "./YachtViewer";
-import { About, Contact, Events, Fleet } from "./Sections";
 
-const FleetM = memo(Fleet);
-const EventsM = memo(Events);
-const AboutM = memo(About);
-const ContactM = memo(Contact);
+/** the viewer (rotator, rooms, booking) is its own chunk: fetched when a visitor points at or opens a yacht */
+const YachtViewer = dynamic(() => import("./YachtViewer"), { ssr: false });
 
-export default function App() {
-  const [open, setOpen] = useState<YachtId | null>(null);
+/** The client shell around the server-rendered page: smooth scroll, reveals, the loader, the nav and the viewer. */
+export default function App({ children }: { children: React.ReactNode }) {
+  const open = useOpenYacht();
 
   useEffect(() => {
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -48,21 +45,12 @@ export default function App() {
     return () => io.disconnect();
   }, []);
 
-  const close = useCallback(() => setOpen(null), []);
-  const show = useCallback((id: YachtId) => setOpen(id), []);
-
   return (
     <>
       <Loader />
       <Nav />
-      <main>
-        <Hero onOpenYacht={show} />
-        <FleetM onOpen={show} />
-        <EventsM onOpen={show} />
-        <AboutM />
-      </main>
-      <ContactM />
-      {open && <YachtViewer id={open} onClose={close} onSwitch={show} />}
+      {children}
+      {open && <YachtViewer id={open} onClose={closeYacht} onSwitch={openYacht} />}
     </>
   );
 }

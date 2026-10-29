@@ -1,13 +1,13 @@
-"use client";
-
-import { FormEvent, useState } from "react";
 import { ArrowUpRight, CalendarDays, MapPin } from "lucide-react";
-import { ABOUT, BRAND, EVENTS, YACHTS, type YachtId } from "@/data/site";
-import { hintYacht } from "@/lib/seqs";
+import { ABOUT, BRAND, EVENTS, YACHTS } from "@/data/site";
+import ContactForm from "./ContactForm";
+import OpenYacht from "./OpenYacht";
+
+/* Server-rendered: the only scripts in these sections are the <OpenYacht> buttons and the enquiry form. */
 
 /* ---------------------------------------------------------------- fleet */
 
-export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
+export function Fleet() {
   return (
     <section id="fleet" className="relative bg-[var(--bg)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="fleet-h">
       <div className="mx-auto max-w-[1500px]">
@@ -26,19 +26,20 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
         <ul className="mt-14 grid gap-5 md:grid-cols-2">
           {YACHTS.map((y, i) => (
             <li key={y.id} data-reveal style={{ ["--d" as string]: `${i * 0.08}s` }}>
-              <button
-                onClick={() => onOpen(y.id)}
-                onPointerEnter={() => hintYacht(y.id)}
-                onFocus={() => hintYacht(y.id)}
+              <OpenYacht
+                id={y.id}
                 className="group relative block w-full overflow-hidden rounded-sm bg-[#0a1424] text-left"
                 style={{ ["--accent" as string]: y.accent }}
-                aria-label={`Open ${y.name}, ${y.theme}`}
+                label={`Open ${y.name}, ${y.theme}`}
               >
                 <div className="relative aspect-[16/11] overflow-hidden sm:aspect-[16/10]">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={y.beam}
+                    srcSet={`${y.beam.replace(".webp", "-960.webp")} 960w, ${y.beam} 1672w`}
+                    sizes="(min-width: 768px) 46vw, 100vw"
                     alt={`${y.name}: a 24 m catamaran dressed for ${y.theme.toLowerCase()} events`}
+                    loading="lazy"
                     decoding="async"
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-[1.2s] ease-out group-hover:scale-[1.05]"
                   />
@@ -58,7 +59,7 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
                   <span>{y.specs[1].value} GUESTS</span>
                   <span className="text-[var(--accent)]">{y.price.toUpperCase()}</span>
                 </div>
-              </button>
+              </OpenYacht>
             </li>
           ))}
         </ul>
@@ -69,7 +70,7 @@ export function Fleet({ onOpen }: { onOpen: (id: YachtId) => void }) {
 
 /* --------------------------------------------------------------- events */
 
-export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
+export function Events() {
   return (
     <section id="events" className="relative bg-[var(--bg2)] px-5 py-24 sm:px-10 md:px-[6vw] md:py-36" aria-labelledby="events-h">
       <div className="mx-auto max-w-[1500px]">
@@ -87,7 +88,7 @@ export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
                 <article className="group grid overflow-hidden rounded-sm border border-white/10 bg-white/[0.02] sm:grid-cols-[1fr_1.1fr]">
                   <div className="relative aspect-[16/10] overflow-hidden sm:aspect-auto sm:min-h-[260px]">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={e.image} alt={`Guests at ${e.title} aboard ${y.name}`} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition-transform duration-[1.2s] ease-out group-hover:scale-[1.04]" />
+                    <img src={e.image} srcSet={`${e.image.replace(".webp", "-960.webp")} 960w, ${e.image} 1672w`} sizes="(min-width: 768px) 24vw, (min-width: 640px) 48vw, 100vw" alt={`Guests at ${e.title} aboard ${y.name}`} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover transition-transform duration-[1.2s] ease-out group-hover:scale-[1.04]" />
                   </div>
                   <div className="flex flex-col p-6 md:p-7">
                     <p className="flex items-center gap-2 font-mono text-[10px] tracking-[0.3em] text-[var(--accent)]">
@@ -100,9 +101,9 @@ export function Events({ onOpen }: { onOpen: (id: YachtId) => void }) {
                     <p className="mt-1.5 flex items-center gap-2 text-sm text-white/50">
                       <MapPin size={13} /> {e.place}
                     </p>
-                    <button onClick={() => onOpen(y.id)} onPointerEnter={() => hintYacht(y.id)} className="btn-ghost mt-auto self-start !mt-7">
+                    <OpenYacht id={y.id} className="btn-ghost mt-auto self-start !mt-7">
                       View the yacht <ArrowUpRight size={14} />
-                    </button>
+                    </OpenYacht>
                   </div>
                 </article>
               </li>
@@ -143,7 +144,7 @@ export function About() {
         </div>
         <div data-reveal className="relative">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="img/hero-poster.webp" alt="Eight yachts anchored in a ring in the Adriatic" loading="lazy" decoding="async" className="aspect-[4/5] w-full rounded-sm object-cover object-[48%_60%] md:aspect-[5/6]" />
+          <img src="img/hero-poster.webp" srcSet="img/hero-poster-960.webp 960w, img/hero-poster.webp 1920w" sizes="(min-width: 768px) 45vw, 100vw" alt="Eight yachts anchored in a ring in the Adriatic" loading="lazy" decoding="async" className="aspect-[4/5] w-full rounded-sm object-cover object-[48%_60%] md:aspect-[5/6]" />
           <p className="absolute bottom-4 left-4 font-mono text-[10px] tracking-[0.3em] text-white/80">THE FLEET AT ANCHOR · ADRIATIC</p>
         </div>
       </div>
@@ -154,15 +155,6 @@ export function About() {
 /* -------------------------------------------------------------- contact */
 
 export function Contact() {
-  const [sent, setSent] = useState(false);
-  const submit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    const body = `Name: ${f.get("name")}\nEmail: ${f.get("email")}\nOrganisation: ${f.get("org")}\nEvent type: ${f.get("type")}\nPreferred date: ${f.get("date")}\nGuests: ${f.get("guests")}\n\n${f.get("message")}`;
-    setSent(true);
-    window.location.href = `mailto:${BRAND.contactEmail}?subject=${encodeURIComponent("Event enquiry")}&body=${encodeURIComponent(body)}`;
-  };
-
   return (
     <footer id="contact" className="relative bg-[#030811] text-[var(--cream)]" aria-labelledby="contact-h">
       <div className="mx-auto grid max-w-[1500px] gap-14 px-5 py-24 sm:px-10 md:grid-cols-2 md:px-[6vw] md:py-36">
@@ -188,57 +180,7 @@ export function Contact() {
             </div>
           </dl>
         </div>
-        <form onSubmit={submit} data-reveal className="space-y-6 self-end">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <label className="block">
-              <span className="label">Your name</span>
-              <input name="name" required autoComplete="name" className="field" />
-            </label>
-            <label className="block">
-              <span className="label">Email</span>
-              <input name="email" type="email" required autoComplete="email" className="field" />
-            </label>
-          </div>
-          <div className="grid gap-6 sm:grid-cols-2">
-            <label className="block">
-              <span className="label">Project / organisation</span>
-              <input name="org" autoComplete="organization" className="field" />
-            </label>
-            <label className="block">
-              <span className="label">Event type</span>
-              <select name="type" className="field">
-                {YACHTS.map((y) => (
-                  <option key={y.id} value={y.theme}>
-                    {y.theme}
-                  </option>
-                ))}
-                <option>Something else</option>
-              </select>
-            </label>
-          </div>
-          <div className="grid gap-6 sm:grid-cols-2">
-            <label className="block">
-              <span className="label">Preferred date</span>
-              <input name="date" type="date" className="field" />
-            </label>
-            <label className="block">
-              <span className="label">Guests</span>
-              <input name="guests" inputMode="numeric" placeholder="e.g. 80" className="field" />
-            </label>
-          </div>
-          <label className="block">
-            <span className="label">Tell us about the event</span>
-            <textarea name="message" rows={3} className="field resize-none" />
-          </label>
-          <div className="flex flex-wrap items-center gap-5">
-            <button className="btn">Send enquiry</button>
-            {sent && (
-              <p role="status" className="text-sm text-white/60">
-                Opening your email app…
-              </p>
-            )}
-          </div>
-        </form>
+        <ContactForm />
       </div>
       <div className="border-t border-white/10 px-5 py-6 font-mono text-[10px] tracking-[0.25em] text-white/40 sm:px-10 md:px-[6vw]">
         © 2026 {BRAND.name} — {BRAND.tag.toUpperCase()} · PLACEHOLDER CONTENT: NAMES, DATES AND PRICES ARE FOR REVIEW.
