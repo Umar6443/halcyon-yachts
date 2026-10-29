@@ -6,19 +6,26 @@
   --font-mono: var(--font-mono-src), ui-monospace, monospace;
 }
 
+:root {
+  --bg: #050b16;
+  --bg2: #08111f;
+  --cream: #f3efe6;
+  --accent: #b6ff00;
+}
+
 html {
-  background: #06182a;
+  background: var(--bg);
   color-scheme: dark;
 }
 body {
-  background: #06182a;
-  color: #f3efe6;
+  background: var(--bg);
+  color: var(--cream);
   font-family: var(--font-sans-src), ui-sans-serif, system-ui, sans-serif;
   overflow-x: hidden;
 }
 ::selection {
-  background: #3fd8d2;
-  color: #04202a;
+  background: var(--accent);
+  color: #06120a;
 }
 
 html.lenis,
@@ -31,38 +38,96 @@ html.lenis body {
 .lenis.lenis-stopped {
   overflow: hidden;
 }
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
 
 :focus-visible {
-  outline: 1px solid #3fd8d2;
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center rounded-full border border-[#3fd8d2] bg-[#3fd8d2] px-7 py-4 font-mono text-[11px] font-medium tracking-[0.25em] text-[#04202a] uppercase transition-all duration-300;
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--accent)] px-7 py-4 font-mono text-[11px] font-medium tracking-[0.25em] text-[#06120a] uppercase transition-[background-color,color,transform] duration-300;
   }
   .btn:hover {
     background: transparent;
-    color: #3fd8d2;
+    color: var(--accent);
+  }
+  .btn:active {
+    transform: scale(0.98);
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-white/25 px-6 py-3.5 font-mono text-[11px] tracking-[0.25em] text-white/90 uppercase transition-colors duration-300;
+  }
+  .btn-ghost:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .field {
-    @apply mt-2 block w-full border-0 border-b border-white/25 bg-transparent py-3 text-lg text-[#f3efe6] outline-none transition-colors;
+    @apply mt-2 block w-full rounded-none border-0 border-b border-white/25 bg-transparent py-3 text-lg text-[var(--cream)] outline-none transition-colors;
   }
   .field:focus {
-    border-color: #3fd8d2;
+    border-color: var(--accent);
+  }
+  .field option {
+    background: #08111f;
+  }
+  .label {
+    @apply font-mono text-[10px] tracking-[0.3em] text-white/55 uppercase;
   }
 }
 
-/* soft rectangular edge on yacht A's shot while it is cross-zoomed over the ring */
-.feather {
-  --m: 145;
-  -webkit-mask-image: radial-gradient(ellipse 100% 100% at 50% 50%, #000 calc(var(--m) * 1%), transparent calc(var(--m) * 1% + 22%));
-  mask-image: radial-gradient(ellipse 100% 100% at 50% 50%, #000 calc(var(--m) * 1%), transparent calc(var(--m) * 1% + 22%));
+/* sections below the film are only rendered when they are near the viewport */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 900px;
 }
 
-.grain {
-  opacity: 0.05;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+/* reveal on scroll: transform + opacity only */
+.reveal-ready [data-reveal] {
+  opacity: 0;
+  transform: translate3d(0, 28px, 0);
+  transition:
+    opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: var(--d, 0s);
+}
+.reveal-ready [data-reveal].in {
+  opacity: 1;
+  transform: none;
+}
+
+/* the 360 viewer */
+.grab {
+  cursor: grab;
+  touch-action: pan-y;
+}
+.grab:active {
+  cursor: grabbing;
+}
+.viewer-in {
+  animation: viewer-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes viewer-in {
+  from {
+    opacity: 0;
+    transform: scale(1.015);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pan-drift {
+  0%,
+  100% {
+    transform: translate3d(var(--p0), 0, 0);
+  }
+  50% {
+    transform: translate3d(var(--p1), 0, 0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -70,6 +135,11 @@ html.lenis body {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+  .reveal-ready [data-reveal] {
+    opacity: 1;
+    transform: none;
   }
 }

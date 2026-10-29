@@ -1,29 +1,42 @@
 /**
- * Scroll-scrubbed WebP frame sequence with progressive quality.
+ * Frame sequences drawn on a canvas: the engine behind both the scroll-scrubbed hero film and the
+ * drag-to-rotate 360 degree yacht viewer.
  *
- * Every clip exists in two tiers: the full-HD frames and a tiny "lite" preview of each frame.
- *  - The site preloads ALL full-HD frames before it opens (see Story), so everything is sharp from the start.
- *  - Lite previews are only an emergency fallback: if the visitor's connection is too slow and the site opens
- *    before the HD frames are in, enableLite() fetches them so no clip is ever an empty layer; each HD frame
- *    replaces its preview as soon as it arrives.
+ * Every sequence exists in two tiers: full-quality WebP frames, and a tiny "lite" preview of each frame.
+ *  - The hero's full-quality frames are all downloaded before the site opens, so it is sharp from the first scroll.
+ *  - Yacht loops download in the background (or at once when a visitor hovers / opens a yacht).
+ *  - Lite previews are only an emergency fallback for very slow links (enableLite()).
  *
- * Frames are NOT evenly spaced: the build keeps many frames where the camera moves fast and few where
- * the shot is nearly still (manifest.ts = each frame's position 0..1 in the original clip).
+ * Frames are NOT evenly spaced in time: the build keeps more where the camera moves fast. `ts` in the manifest is
+ * each frame's position (0..1) in the original timeline, so scrolling maps to the same moment of the film.
+ * Loops (`loop: true`) have no `ts`: position 0..1 is the frame index and wraps around, which is what makes a drag
+ * rotate the yacht at an even speed.
+ *
  * Only a small window of frames around the playhead is decoded to bitmaps (full-HD bitmaps are ~8 MB each).
- * draw(canvas, t) cover-fits the frame at position t and cross-blends the two neighbours; once scrolling
- * settles, draw(..., settle) snaps to a single pristine frame.
+ * draw(canvas, t) cover-fits the frame at position t and cross-blends the two neighbours; once the picture is at
+ * rest, draw(..., settle) snaps to one pristine frame.
  */
 
 type Bitmap = ImageBitmap | HTMLImageElement;
 
-type Manifest = { count: number; pattern: string; lite?: string; w: number; h: number; fps: number; ts?: number[]; sizes?: number[] };
+type Manifest = {
+  count: number;
+  pattern: string;
+  lite?: string;
+  w: number;
+  h: number;
+  fps: number;
+  ts?: number[];
+  sizes?: number[];
+  marks?: Record<string, [number, number]>;
+};
 
 const WINDOW_SIDE = 6;
-const WINDOW_EXTRA = 5;
-const WINDOW_KEEP = 12;
+const WINDOW_EXTRA = 6;
+const WINDOW_KEEP = 14;
 const DECODE_PARALLEL = 3;
-/** downloads running at once, across ALL clips */
-const FETCH_PARALLEL = 16;
+/** downloads running at once, across ALL sequences */
+const FETCH_PARALLEL = 14;
 
 /* ---------- one shared download scheduler: lowest priority number goes first ---------- */
 
@@ -60,7 +73,7 @@ export function scheduleFetch(prio: () => number, run: () => Promise<void>) {
   pumpFetches();
 }
 
-/** 0 = the clip the visitor is at (or heading to next), 1 = the one after it, ... */
+/** 0 = the sequence the visitor is at (or heading to next), 1 = the one after it, ... */
 const rank: Record<string, number> = {};
 export function setSequenceRank(order: string[]) {
   order.forEach((name, i) => (rank[name] = i));
@@ -89,12 +102,14 @@ export class Sequence {
   count = 0;
   w = 16;
   h = 9;
-  /** preview frames fetched / full-HD frames fetched */
+  /** preview frames fetched / full-quality frames fetched */
   loadedLite = 0;
   loadedHd = 0;
-  /** full-HD bytes fetched so far / in total (total is known once the manifest has loaded) */
+  /** full-quality bytes fetched so far / in total (total is known once the manifest has loaded) */
   bytesLoaded = 0;
   bytesTotal = 0;
+  /** named stretches of the sequence, 0..1 (from the build) */
+  marks: Record<string, [number, number]> = {};
   private liteScheduled = false;
   /** performance.now() of the last draw, used to free memory of sequences that are no longer on screen */
   lastDrawAt = 0;
@@ -112,12 +127,26 @@ export class Sequence {
   private manifest: Manifest | null = null;
   private started = false;
   private center = 0;
+  private resolveManifest!: () => void;
+  /** resolves once the manifest (and with it count / marks) is known */
+  manifestReady = new Promise<void>((r) => (this.resolveManifest = r));
   lastT = 0;
 
-  constructor(private name: string) {}
+  constructor(
+    private name: string,
+    private loop = false,
+  ) {}
 
-  /** Fetch the manifest, then queue every full-HD frame with the shared scheduler. */
-  start() {
+  private idx(i: number) {
+    return this.loop ? ((i % this.count) + this.count) % this.count : i;
+  }
+  private dist(i: number, c: number) {
+    const d = Math.abs(i - c);
+    return this.loop ? Math.min(d, this.count - d) : d;
+  }
+
+  /** Fetch the manifest, then queue every full-quality frame with the shared scheduler. `base` shifts the priority. */
+  start(base = 0) {
     if (this.started) return;
     this.started = true;
     (async () => {
@@ -127,14 +156,15 @@ export class Sequence {
         this.count = m.count;
         this.w = m.w;
         this.h = m.h;
+        this.marks = m.marks ?? {};
         this.lite = new Array(m.count).fill(null);
         this.hd = new Array(m.count).fill(null);
-        this.bytesTotal = m.sizes ? m.sizes.reduce((n, b) => n + b, 0) : m.count * 300000;
+        this.bytesTotal = m.sizes ? m.sizes.reduce((n, b) => n + b, 0) : m.count * 250000;
+        this.resolveManifest();
         const url = (pattern: string, i: number) => pattern.replace("%03d", String(i + 1).padStart(3, "0"));
-        // full HD: the clip nearest the visitor first, nearest frames first
         for (let i = 0; i < m.count; i++) {
           scheduleFetch(
-            () => 10 + (rank[this.name] ?? 9) * 100 + Math.abs(i - this.center) / 1000,
+            () => base + 10 + (rank[this.name] ?? 9) * 100 + this.dist(i, this.center) / 1000,
             async () => {
               const blob = await fetch(url(m.pattern, i)).then((r) => r.blob());
               this.hd[i] = blob;
@@ -150,7 +180,7 @@ export class Sequence {
     })();
   }
 
-  /** emergency fallback: fetch the tiny preview frames too (used only if the site had to open before the HD frames were in) */
+  /** emergency fallback: fetch the tiny preview frames too (used only if the site had to open before the frames were in) */
   enableLite() {
     const m = this.manifest;
     if (this.liteScheduled || !m || !m.lite) return;
@@ -170,23 +200,18 @@ export class Sequence {
 
   /** a frame just arrived: if it is near the playhead, decode it now (and let a preview be upgraded) */
   private afterArrival(i: number) {
-    if (Math.abs(i - this.center) <= WINDOW_SIDE + WINDOW_EXTRA) {
+    if (this.dist(i, this.center) <= WINDOW_SIDE + WINDOW_EXTRA) {
       if (!this.want.includes(i)) this.want.push(i);
       this.pump();
     }
   }
 
-  /** resolves once the first n preview frames have been fetched */
-  async whenLiteLoaded(n: number) {
-    while (!(this.count > 0 && this.loadedLite >= Math.min(n, this.count))) await new Promise((r) => setTimeout(r, 60));
-  }
-
-  /** how much of this clip's full-HD frames have arrived, 0..1 */
+  /** how much of this sequence's full-quality frames have arrived, 0..1 */
   get hdFraction() {
     return this.count ? this.loadedHd / this.count : 0;
   }
 
-  /** a frame is worth decoding if it has no picture yet, or only a preview while its HD frame has arrived */
+  /** a frame is worth decoding if it has no picture yet, or only a preview while its full frame has arrived */
   private needsDecode(k: number) {
     if (k < 0 || k >= this.count || this.decoding.has(k)) return false;
     const have = this.bitmaps.get(k);
@@ -210,7 +235,7 @@ export class Sequence {
             if (old.bmp instanceof ImageBitmap) old.bmp.close();
             if (old.url) URL.revokeObjectURL(old.url);
           }
-          if (this.needed.has(i)) {
+          if (this.needed.has(i) || this.hasPicture === false) {
             this.lastKey = ""; // the picture on screen can now be made of a better frame
             this.onDecoded?.();
           }
@@ -243,15 +268,15 @@ export class Sequence {
     this.center = center;
     const want: number[] = [];
     for (let d = 0; d <= WINDOW_SIDE; d++) {
-      want.push(center + d);
-      if (d > 0) want.push(center - d);
+      want.push(this.idx(center + d));
+      if (d > 0) want.push(this.idx(center - d));
     }
-    for (let d = WINDOW_SIDE + 1; d <= WINDOW_SIDE + WINDOW_EXTRA; d++) want.push(center + (dir >= 0 ? d : -d));
+    for (let d = WINDOW_SIDE + 1; d <= WINDOW_SIDE + WINDOW_EXTRA; d++) want.push(this.idx(center + (dir >= 0 ? d : -d)));
     this.want = want;
     this.pump();
     if (this.bitmaps.size > WINDOW_KEEP * 2 + 1) {
       for (const idx of Array.from(this.bitmaps.keys())) {
-        if (Math.abs(idx - center) > WINDOW_KEEP) this.closeBitmap(idx);
+        if (this.dist(idx, center) > WINDOW_KEEP) this.closeBitmap(idx);
       }
     }
   }
@@ -259,22 +284,29 @@ export class Sequence {
   /** free every decoded frame (compressed frames stay); decoding restarts on the next draw */
   releaseBitmaps() {
     for (const idx of Array.from(this.bitmaps.keys())) this.closeBitmap(idx);
+    this.lastKey = "";
   }
 
   private nearest(i: number): Bitmap | null {
     const hit = this.bitmaps.get(i);
     if (hit) return hit.bmp;
     for (let d = 1; d < this.count; d++) {
-      const a = this.bitmaps.get(i - d);
+      const a = this.bitmaps.get(this.idx(i - d));
       if (a) return a.bmp;
-      const b = this.bitmaps.get(i + d);
+      const b = this.bitmaps.get(this.idx(i + d));
       if (b) return b.bmp;
     }
     return null;
   }
 
-  /** position t (0..1 of the original clip) -> the two neighbouring frames and the blend between them */
+  /** position t (0..1) -> the two neighbouring frames and the blend between them */
   private locate(t: number) {
+    if (this.loop) {
+      const p = ((t % 1) + 1) % 1;
+      const pos = p * this.count;
+      const i0 = Math.floor(pos) % this.count;
+      return { i0, i1: (i0 + 1) % this.count, a: pos - Math.floor(pos) };
+    }
     const p = Math.min(1, Math.max(0, t));
     const ts = this.manifest?.ts;
     if (!ts || ts.length !== this.count) {
@@ -297,11 +329,14 @@ export class Sequence {
    * Draw the frame at position t (0..1) into the canvas, cover-fit.
    * fx/fy pick which part of the frame stays visible when the viewport crops it.
    * settle = true draws one single frame (the nearest) instead of a blend.
+   * Returns true when something was painted.
    */
   draw(canvas: HTMLCanvasElement | null, t: number, fx = 0.5, fy = 0.5, settle = false) {
-    if (!canvas || this.count === 0) return;
+    if (!canvas || this.count === 0) return false;
     this.lastDrawAt = performance.now();
-    const dir = t >= this.lastT ? 1 : -1;
+    let delta = t - this.lastT;
+    if (this.loop) delta = delta > 0.5 ? delta - 1 : delta < -0.5 ? delta + 1 : delta;
+    const dir = delta >= 0 ? 1 : -1;
     this.lastT = t;
     const loc = this.locate(t);
     const i0 = loc.i0;
@@ -310,22 +345,24 @@ export class Sequence {
     if (settle) a = a < 0.5 ? 0 : 1;
     this.manageWindow(a < 0.5 ? i0 : i1, dir);
     const first = a >= 1 ? i1 : i0;
-    this.needed = new Set(a > 0.02 && a < 1 && i1 !== i0 ? [first, i1] : [first]);
+    const blend = a > 0.02 && a < 1 && i1 !== i0;
+    this.needed = new Set(blend ? [first, i1] : [first]);
     const f0 = this.nearest(first);
-    if (!f0) return;
+    if (!f0) return false;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cw = Math.min(2880, Math.round(canvas.clientWidth * dpr));
     const ch = Math.round(cw * (canvas.clientHeight / Math.max(1, canvas.clientWidth)));
+    if (cw === 0 || ch === 0) return false;
     // nothing changed since the last paint (same frames, blend, crop, size): don't repaint
     const key = `${first}|${i1}|${a.toFixed(3)}|${fx.toFixed(3)}|${fy}|${cw}x${ch}|${settle ? 1 : 0}`;
-    if (key === this.lastKey) return;
+    if (key === this.lastKey) return false;
     if (canvas.width !== cw || canvas.height !== ch) {
       canvas.width = cw;
       canvas.height = ch;
     }
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return false;
     // best scaler when the picture is at rest (what the visitor looks at); a cheaper one while it is moving
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = settle ? "high" : "medium";
@@ -333,7 +370,7 @@ export class Sequence {
     const place = (src: Bitmap) => {
       const sw = (src as HTMLImageElement).width;
       const sh = (src as HTMLImageElement).height;
-      // previews are smaller than the HD frames: always scale by the clip's real frame size
+      // previews are smaller than the full frames: always scale by the sequence's real frame size
       const s = Math.max(cw / this.w, ch / this.h) * (this.w / sw);
       const dw = sw * s;
       const dh = sh * s;
@@ -346,7 +383,7 @@ export class Sequence {
     ctx.drawImage(f0, ...place(f0));
     this.hasPicture = true;
     let complete = true;
-    if (a > 0.02 && a < 1 && i1 !== i0) {
+    if (blend) {
       const f1 = this.bitmaps.get(i1)?.bmp;
       if (f1) {
         ctx.globalAlpha = a;
@@ -359,6 +396,7 @@ export class Sequence {
     // only remember this paint once it is made of the best frames available (otherwise repaint when they arrive)
     const have = this.bitmaps.get(first);
     if (complete && have && (have.hd || !this.hd[first])) this.lastKey = key;
+    return true;
   }
 
   dispose() {

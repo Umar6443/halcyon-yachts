@@ -3,7 +3,7 @@
  * visit opens instantly and fully sharp (no re-download). Bump CACHE when the media is rebuilt.
  * The hero loop is fetched as a whole file (no range request), so it is cached too.
  */
-const CACHE = "halcyon-media-v2";
+const CACHE = "blocktide-media-v1";
 
 self.addEventListener("install", () => self.skipWaiting());
 
@@ -11,7 +11,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       for (const key of await caches.keys()) {
-        if (key.startsWith("halcyon-media-") && key !== CACHE) await caches.delete(key);
+        if (key.startsWith("blocktide-media-") && key !== CACHE) await caches.delete(key);
       }
       await self.clients.claim();
     })(),

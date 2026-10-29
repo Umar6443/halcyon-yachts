@@ -1,5 +1,5 @@
-import Story from "@/components/Story";
+import App from "@/components/App";
 
 export default function Home() {
-  return <Story />;
+  return <App />;
 }
